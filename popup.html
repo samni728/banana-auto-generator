@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini Auto PPT Generator</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 450px;
+      min-height: 500px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    }
+
+    h1 {
+      font-size: 20px;
+      color: #333;
+      margin-bottom: 15px;
+      text-align: center;
+    }
+
+    .info {
+      background: #f0f4ff;
+      border-left: 4px solid #667eea;
+      padding: 10px;
+      margin-bottom: 15px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #555;
+    }
+
+    .help-section {
+      margin-bottom: 15px;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .help-section summary {
+      padding: 10px 12px;
+      background: #f8f9fa;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      color: #667eea;
+      user-select: none;
+      transition: background 0.2s;
+    }
+
+    .help-section summary:hover {
+      background: #f0f4ff;
+    }
+
+    .help-section[open] summary {
+      background: #f0f4ff;
+      border-bottom: 1px solid #e0e0e0;
+    }
+
+    .help-content {
+      padding: 12px;
+      font-size: 12px;
+      color: #555;
+      background: white;
+    }
+
+    .help-content p {
+      margin: 0 0 8px 0;
+      line-height: 1.5;
+    }
+
+    .help-content p:last-child {
+      margin-bottom: 0;
+    }
+
+    .help-content a {
+      color: #667eea;
+      text-decoration: none;
+    }
+
+    .help-content a:hover {
+      text-decoration: underline;
+    }
+
+    label {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 8px;
+      margin-top: 12px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      transition: border-color 0.3s;
+      margin-bottom: 8px;
+    }
+
+    input[type="text"]:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 200px;
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: 'Courier New', monospace;
+      resize: vertical;
+      transition: border-color 0.3s;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .controls {
+      margin-top: 15px;
+      display: flex;
+      gap: 10px;
+    }
+
+    button {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    #startBtn {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    #startBtn:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+    }
+
+    #startBtn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    #stopBtn {
+      background: #ff4757;
+      color: white;
+      display: none;
+    }
+
+    #stopBtn:hover {
+      background: #ff3838;
+    }
+
+    #clearBtn {
+      background: #f1f2f6;
+      color: #333;
+    }
+
+    #clearBtn:hover {
+      background: #dfe4ea;
+    }
+
+    .status {
+      margin-top: 15px;
+      padding: 12px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      font-size: 13px;
+      display: none;
+    }
+
+    .status.active {
+      display: block;
+    }
+
+    .status.processing {
+      background: #fff3cd;
+      border-left: 4px solid #ffc107;
+    }
+
+    .status.success {
+      background: #d4edda;
+      border-left: 4px solid #28a745;
+    }
+
+    .status.error {
+      background: #f8d7da;
+      border-left: 4px solid #dc3545;
+    }
+
+    .progress {
+      margin-top: 10px;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #e0e0e0;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+      transition: width 0.3s;
+      width: 0%;
+    }
+
+    .progress-text {
+      margin-top: 5px;
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>🎨 Gemini Auto PPT Generator</h1>
+
+    <!-- Collapsible Help Section -->
+    <details class="help-section">
+      <summary>ℹ️ 使用说明</summary>
+      <div class="help-content">
+        <p>💡 <strong>基本用法：</strong>每行一个提示词，插件会自动逐个生成图片并保存为 page1.png, page2.png...</p>
+        <p>⚠️ <strong>路径限制：：</strong>仅支持子文件夹名称（如 ppt-slides），不支持绝对路径。如需保存到特定位置，请先在Chrome设置中修改默认下载文件夹（<a
+            href="chrome://settings/downloads" target="_blank">chrome://settings/downloads</a>）。</p>
+      </div>
+    </details>
+
+    <label for="saveDirectory">保存子文件夹（可选）：</label>
+    <input type="text" id="saveDirectory" placeholder="输入子文件夹名称，如：ppt-slides（留空保存到下载文件夹根目录）">
+
+    <label for="prompts">输入提示词（每行一个）：</label>
+    <textarea id="prompts"
+      placeholder="在此粘贴你的提示词，每行一个...&#10;&#10;例如：&#10;Create a stunning title slide...&#10;Create a comparison slide...&#10;Create a conclusion slide..."></textarea>
+
+    <div class="controls">
+      <button id="startBtn">🚀 开始生成</button>
+      <button id="stopBtn">⏹️ 停止</button>
+      <button id="clearBtn">🗑️ 清空</button>
+    </div>
+
+    <div id="status" class="status">
+      <div id="statusText">准备就绪</div>
+      <div class="progress">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-text" id="progressText">0 / 0</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+
+</html>
