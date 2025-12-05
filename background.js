@@ -163,11 +163,15 @@ chrome.webRequest.onBeforeRequest.addListener(
         }
       );
 
-      // 关键：如果队列空了，关闭监听，避免重复下载
+      // 【修复】根据分析报告：不要因为队列空就关闭监听器
+      // Gemini 的请求有严重延迟（36-123秒），如果提前关闭监听器，延迟的请求无法被捕获
+      // 改为：等待 content script 主动发送 stopSniffing 消息
       if (downloadQueue.length === 0) {
-        isSniffing = false;
-        capturedUrls.clear();
-        console.log("[BG] 🎉 所有下载已启动，关闭监听");
+        console.log(
+          `[BG] ⚠️ 队列已空，但保持监听器开启（等待可能的延迟请求）`
+        );
+        // 不关闭 isSniffing，继续监听可能的延迟请求
+        // 监听器将在 content script 发送 stopSniffing 时关闭
       }
     } else if (isSniffing && details.url.includes("/rd-gg/")) {
       // URL 已被捕获过，跳过

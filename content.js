@@ -1203,13 +1203,14 @@ async function downloadAllGeneratedImages(expectedCount = null) {
       const downloadConfirmed = new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           window.downloadWaiters.delete(currentFilename);
-          // 【优化】根据 fix.md：超时时间保留 15s 是 OK 的，因为现在后台会立刻响应，通常不会触发这个超时
+          // 【修复】根据分析报告：Gemini 的请求延迟可能达到 120 秒以上
+          // 将超时时间增加到 180 秒（3分钟），适应 Gemini 的延迟机制
           reject(
             new Error(
-              `等待下载启动超时 (${pageNum}/${totalCount}) - 未捕获到网络请求`
+              `等待下载启动超时 (${pageNum}/${totalCount}) - 未捕获到网络请求（可能 Gemini 延迟）`
             )
           );
-        }, 15000); // 15秒超时
+        }, 180000); // 180秒超时（3分钟），适应 Gemini 的延迟机制
 
         // 将 resolve/reject 存储到 Map 中，等待全局消息监听器处理
         window.downloadWaiters.set(currentFilename, {
@@ -1275,14 +1276,38 @@ async function downloadAllGeneratedImages(expectedCount = null) {
     }
   }
 
+  // 6. 等待所有下载启动（根据分析报告，Gemini 的请求延迟可能达到 120 秒以上）
+  console.log(
+    `[Batch] ✅ 所有按钮已点击，等待所有下载启动（最多等待 200 秒）...`
+  );
+
+  // 【修复】根据分析报告：Gemini 的请求有严重延迟（36-123秒）
+  // 等待足够长的时间，确保所有延迟的请求都能被捕获
+  // 等待时间 = 按钮数量 * 预期延迟（120秒）+ 缓冲时间（80秒）
+  const maxWaitTime = 200000; // 200 秒（3分20秒）
+  const waitStartTime = Date.now();
+
+  // 轮询检查是否所有下载都已启动
+  while (Date.now() - waitStartTime < maxWaitTime) {
+    // 检查是否还有未完成的等待器
+    if (window.downloadWaiters.size === 0) {
+      console.log(`[Batch] ✅ 所有下载已启动确认`);
+      break;
+    }
+    await sleep(5000); // 每 5 秒检查一次
+  }
+
+  if (window.downloadWaiters.size > 0) {
+    console.warn(
+      `[Batch] ⚠️ 仍有 ${window.downloadWaiters.size} 个下载未确认，但已超时`
+    );
+  }
+
   // 清理等待器 Map
   window.downloadWaiters.clear();
 
-  // 6. 等待所有下载启动（后台会自动关闭监听）
-  console.log(`[Batch] ✅ 所有按钮已点击，等待下载完成...`);
-
   // 下载阶段结束，通知后台清理状态
-  await sleep(3000); // 给后台一些时间完成最后的下载启动
+  console.log(`[Batch] 📡 通知后台停止监听...`);
   chrome.runtime.sendMessage({ action: "stopSniffing" });
   chrome.runtime.sendMessage({ action: "taskComplete" });
 
