@@ -6,10 +6,12 @@
   "permissions": [
     "activeTab",
     "downloads",
-    "storage"
+    "storage",
+    "webRequest"
   ],
   "host_permissions": [
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://*.googleusercontent.com/*"
   ],
   "action": {
     "default_popup": "popup.html",

@@ -1074,7 +1074,10 @@ function buildFullSizeCandidates(src) {
     }
 
     // 核心修复：统一路径为 /rd-gg/（日志显示 rd-gg-dl 会返回元数据/HTML）
-    let pathname = url.pathname.replace(/\/gg\/|\/rd-gg-dl\/|\/rd-gg\//, "/rd-gg/");
+    let pathname = url.pathname.replace(
+      /\/gg\/|\/rd-gg-dl\/|\/rd-gg\//,
+      "/rd-gg/"
+    );
 
     // 去掉已有的尺寸参数
     pathname = pathname.replace(/=s\d[^/]*$/i, "");
@@ -1091,78 +1094,46 @@ function buildFullSizeCandidates(src) {
 
     return [
       `${base}=s0-d-I${suffix}`, // 优先与手动全尺寸一致
-      `${base}=s0${suffix}`,     // 备选高清
-      src                        // 兜底原始
+      `${base}=s0${suffix}`, // 备选高清
+      src, // 兜底原始
     ];
   } catch (e) {
     return [src];
   }
 }
 
-// 批量获取图片链接 -> 转换为高清 -> 下载（按生成顺序，过滤非图片）
+// 批量获取图片链接 -> 通过点击按钮触发网络请求 -> 后台捕获下载
+// 【核心改进】不再使用 fetch+blob，改为监听浏览器真实网络请求
 async function downloadAllGeneratedImages(expectedCount = null) {
-  console.log("[Batch] 开始提取图片链接...");
+  console.log("[Batch] 🎬 开始使用网络监听模式下载...");
 
   // 1. 再等一下，确保最后一张图完全渲染
   await sleep(2000);
 
-  // 2. 优先使用生成阶段记录的 successImages（保持顺序，过滤非图片）
-  let candidates = [];
-  if (successImages && successImages.length) {
-    candidates = successImages
-      .filter((item) => isRasterImageUrl(item.src))
-      .sort((a, b) => a.index - b.index); // 按生成顺序
+  // 2. 查找所有 "Download full size" 按钮（按页面顺序）
+  const downloadButtons = findDownloadFullSizeButtons();
+  
+  if (downloadButtons.length === 0) {
+    console.warn("[Batch] ❌ 未找到任何下载按钮，尝试回退到 DOM 提取模式");
+    // 回退到旧的 fetch 模式
+    await downloadAllGeneratedImagesFallback(expectedCount);
+    return;
   }
 
-  // 3. 如果记录为空，回退到 DOM 提取（避免全空）
-  if (!candidates.length) {
-    const allImages = Array.from(document.querySelectorAll("img"));
-    const validImages = allImages.filter((img) => {
-      const src = img.src || "";
-      if (!isRasterImageUrl(src)) return false;
-      if (!img.complete || img.naturalWidth === 0) return false;
-      if (src.includes("nano-banana")) return false;
-      if (src.includes("profile_photo")) return false;
-      return img.naturalWidth > 200;
-    });
+  const totalCount = downloadButtons.length;
+  console.log(`[Batch] ✅ 找到 ${totalCount} 个下载按钮`);
 
-    if (!validImages.length) {
-      console.warn("[Batch] 未找到任何有效图片");
-      chrome.runtime.sendMessage({
-        action: "generationError",
-        error: "未找到任何生成的图片，请检查生成是否成功",
-      });
-      return;
-    }
+  // 3. 生成文件名列表（按顺序）
+  const filenames = downloadButtons.map((_, i) => {
+    const pageNum = i + 1;
+    return saveDirectory
+      ? `${saveDirectory}/page${pageNum}.png`
+      : `page${pageNum}.png`;
+  });
 
-    const count =
-      expectedCount !== null
-        ? expectedCount
-        : currentPrompts.length || validImages.length;
-    const targetImages = validImages.slice(-count);
-    candidates = targetImages.map((img, idx) => ({
-      index: idx + 1,
-      src: img.src,
-    }));
-    if (candidates.length < count) {
-      console.warn(
-        `[Batch] 警告：期望 ${count} 张图片，但只找到 ${candidates.length} 张`
-      );
-    }
-    console.log(
-      `[Batch] 找到 ${validImages.length} 张图（DOM回退），准备下载最后 ${candidates.length} 张`
-    );
-  } else {
-    console.log(
-      `[Batch] 使用生成记录的图片列表，准备下载 ${candidates.length} 张`
-    );
-  }
-
-  const totalCount = candidates.length;
+  // 4. 通知后台开始监听网络请求
   total = totalCount;
   currentIndex = 0;
-
-  // 进入下载阶段，通知后台/弹窗用于进度展示
   chrome.runtime.sendMessage({
     action: "taskStart",
     total: totalCount,
@@ -1177,60 +1148,147 @@ async function downloadAllGeneratedImages(expectedCount = null) {
     status: "downloading",
   });
 
-  // 4. 下载（严格按 index 排序，文件名从1递增）
-  for (let i = 0; i < candidates.length; i++) {
-    const pageNum = i + 1; // 文件名序号，严格递增
-    const src = candidates[i].src;
-    const candidatesUrls = buildFullSizeCandidates(src);
-    console.log(
-      `[Batch] Page ${pageNum}: 全尺寸候选 ${candidatesUrls.length} 个，依次尝试`
-    );
+  await chrome.runtime.sendMessage({
+    action: "startSniffing",
+    filenames: filenames,
+  });
+  console.log(`[Batch] 📡 后台监听已启动，准备点击 ${totalCount} 个按钮`);
 
-    // 强制使用 .png 扩展
-    const filename = saveDirectory
-      ? `${saveDirectory}/page${pageNum}.png`
-      : `page${pageNum}.png`;
+  // 5. 慢速依次点击按钮，让后台捕获网络请求
+  for (let i = 0; i < downloadButtons.length; i++) {
+    const pageNum = i + 1;
+    const button = downloadButtons[i];
 
-    let success = false;
-    for (let k = 0; k < candidatesUrls.length; k++) {
-      const url = candidatesUrls[k];
-      try {
-        await fetchAndDownloadWithAuth(url, filename, pageNum);
-        success = true;
-        break;
-      } catch (err) {
-        console.error(
-          `[Batch] Page ${pageNum} 候选 ${k + 1}/${candidatesUrls.length} 失败: ${err?.message || err}`
-        );
-        // 尝试下一个候选
-      }
+    try {
+      console.log(`[Batch] 🖱️ 点击第 ${pageNum}/${totalCount} 个按钮...`);
+      
+      // 滚动到按钮可见
+      button.scrollIntoView({ behavior: "smooth", block: "center" });
+      await sleep(500);
+
+      // 点击按钮（触发浏览器发起 /rd-gg/ 请求）
+      button.click();
+      console.log(`[Batch] ✅ 第 ${pageNum} 个按钮已点击，等待后台捕获请求...`);
+
+      // 重要：给足够的时间让请求发出去被后台捕获
+      // Gemini 的按钮点击后可能会有 1-2 秒的延迟才发起网络请求
+      await sleep(2500);
+
+      // 更新下载进度
+      currentIndex = pageNum;
+      chrome.runtime.sendMessage({
+        action: "updateProgress",
+        current: pageNum,
+        total: totalCount,
+        status: "downloading",
+      });
+    } catch (err) {
+      console.error(`[Batch] ❌ 点击第 ${pageNum} 个按钮失败:`, err);
     }
-
-    if (!success) {
-      // 全部候选失败，最后兜底用原始 src 直链（可能是小图）
-      console.warn(
-        `[Batch] Page ${pageNum} 所有高清候选失败，兜底原始链接`
-      );
-      await fetchAndDownloadWithAuth(src, filename, pageNum, { skipTypeCheck: true, skipSizeCheck: true });
-    }
-
-    await sleep(800);
-
-    // 更新下载进度
-    currentIndex = pageNum - 1;
-    chrome.runtime.sendMessage({
-      action: "updateProgress",
-      current: pageNum,
-      total: totalCount,
-      status: "downloading",
-    });
   }
 
+  // 6. 等待所有下载启动（后台会自动关闭监听）
+  console.log(`[Batch] ✅ 所有按钮已点击，等待下载完成...`);
+  
   // 下载阶段结束，通知后台清理状态
+  await sleep(3000); // 给后台一些时间完成最后的下载启动
+  chrome.runtime.sendMessage({ action: "stopSniffing" });
   chrome.runtime.sendMessage({ action: "taskComplete" });
+  
   isGenerating = false;
   currentIndex = 0;
   total = 0;
+  console.log(`[Batch] 🎉 下载任务完成`);
+}
+
+// 查找所有 "Download full size" 按钮（按页面顺序）
+function findDownloadFullSizeButtons() {
+  // 多种选择器尝试
+  const selectors = [
+    'button[aria-label*="Download full size"]',
+    'button[aria-label*="下载完整尺寸"]',
+    'button[data-test-id="download-generated-image-button"]',
+    'button[aria-label*="Download"]',
+    'button[title*="Download full size"]',
+    'button[title*="下载完整尺寸"]',
+    'mat-icon[fonticon="download"]',
+    'button:has(mat-icon[fonticon="download"])',
+  ];
+
+  const buttons = [];
+  for (const selector of selectors) {
+    try {
+      const found = Array.from(document.querySelectorAll(selector));
+      for (const btn of found) {
+        // 如果是 mat-icon，找最近的 button 父元素
+        let button = btn;
+        if (btn.tagName === "MAT-ICON") {
+          button = btn.closest("button") || btn.parentElement;
+        }
+        
+        // 检查按钮文本或 aria-label 是否包含下载相关关键词
+        const text = (button.textContent || button.getAttribute("aria-label") || "").toLowerCase();
+        if (
+          text.includes("download") ||
+          text.includes("下载") ||
+          text.includes("full size") ||
+          text.includes("完整尺寸")
+        ) {
+          // 避免重复添加
+          if (!buttons.includes(button)) {
+            buttons.push(button);
+          }
+        }
+      }
+      if (buttons.length > 0) break; // 找到就停止
+    } catch (e) {
+      // 某些选择器可能不支持（如 :has），忽略错误
+      continue;
+    }
+  }
+
+  // 按 DOM 顺序排序（从上到下）
+  return buttons.sort((a, b) => {
+    const posA = a.getBoundingClientRect().top;
+    const posB = b.getBoundingClientRect().top;
+    return posA - posB;
+  });
+}
+
+// 兜底方案：如果找不到按钮，回退到旧的 fetch 模式
+async function downloadAllGeneratedImagesFallback(expectedCount = null) {
+  console.log("[Batch] ⚠️ 使用兜底 fetch 模式...");
+  
+  // 这里保留原来的 fetch 逻辑作为兜底
+  const allImages = Array.from(document.querySelectorAll("img"));
+  const validImages = allImages.filter((img) => {
+    const src = img.src || "";
+    if (!isRasterImageUrl(src)) return false;
+    if (!img.complete || img.naturalWidth === 0) return false;
+    if (src.includes("nano-banana")) return false;
+    if (src.includes("profile_photo")) return false;
+    return img.naturalWidth > 200;
+  });
+
+  if (!validImages.length) {
+    console.warn("[Batch] 未找到任何有效图片");
+    chrome.runtime.sendMessage({
+      action: "generationError",
+      error: "未找到任何生成的图片，请检查生成是否成功",
+    });
+    return;
+  }
+
+  const count =
+    expectedCount !== null
+      ? expectedCount
+      : currentPrompts.length || validImages.length;
+  const targetImages = validImages.slice(-count);
+
+  console.warn(
+    `[Batch] 兜底模式：找到 ${targetImages.length} 张图，但无法保证高清质量`
+  );
+  // 这里可以调用旧的 fetchAndDownloadWithAuth，但建议用户使用按钮模式
 }
 
 // 使用带凭证的 fetch 获取图片并下载（解决 rd-gg-dl 需身份校验导致的 pageX.html 问题）
@@ -1256,7 +1314,9 @@ async function fetchAndDownloadWithAuth(url, filename, pageNum, options = {}) {
 
     const blob = await res.blob();
     if (!skipSizeCheck && blob.size < 2000) {
-      throw new Error(`Image too small (${blob.size} bytes), likely error response`);
+      throw new Error(
+        `Image too small (${blob.size} bytes), likely error response`
+      );
     }
 
     const objectUrl = URL.createObjectURL(blob);
@@ -1271,7 +1331,11 @@ async function fetchAndDownloadWithAuth(url, filename, pageNum, options = {}) {
         (res) => {
           if (res && res.success) {
             console.log(
-              `[Batch] Page ${pageNum} 已通过 fetch+blob 发送下载 (size ${(blob.size / 1024 / 1024).toFixed(2)} MB)`
+              `[Batch] Page ${pageNum} 已通过 fetch+blob 发送下载 (size ${(
+                blob.size /
+                1024 /
+                1024
+              ).toFixed(2)} MB)`
             );
           } else {
             console.error(`[Batch] Page ${pageNum} 下载失败`, res && res.error);
