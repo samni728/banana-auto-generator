@@ -17,9 +17,11 @@ const elements = {
 // 动态创建“仅下载当前页图片”按钮（当页面已有图片时才显示）
 const downloadExistingBtn = document.createElement('button');
 downloadExistingBtn.id = 'downloadExistingBtn';
-downloadExistingBtn.textContent = '下载当前页图片';
+downloadExistingBtn.textContent = '下载本页图片';
 downloadExistingBtn.style.display = 'none';
 downloadExistingBtn.style.marginLeft = '8px';
+downloadExistingBtn.style.whiteSpace = 'nowrap';
+downloadExistingBtn.style.fontSize = '13px';
 downloadExistingBtn.className = 'btn secondary';
 
 // Initialize
@@ -73,7 +75,7 @@ async function checkTaskStatus() {
     // 优先从 background 查询持久化状态
     const bgState = await chrome.runtime.sendMessage({ action: 'getTaskState' });
     
-    if (bgState && bgState.isGenerating) {
+  if (bgState && bgState.isGenerating) {
       // 从 background 恢复状态
       isRunning = true;
       elements.startBtn.style.display = 'none';
@@ -86,10 +88,16 @@ async function checkTaskStatus() {
         if (newProgress > lastDisplayedProgress) {
           lastDisplayedProgress = newProgress;
           updateProgress(newProgress, bgState.total);
-          showStatus(`正在生成第 ${newProgress} 张图片...`, 'processing');
+        const statusText = bgState.status === 'downloading'
+          ? `正在下载第 ${newProgress} 张图片...`
+          : `正在生成第 ${newProgress} 张图片...`;
+        showStatus(statusText, 'processing');
         }
       } else {
-        showStatus('正在生成图片...', 'processing');
+      const statusText = bgState.status === 'downloading'
+        ? '正在下载图片...'
+        : '正在生成图片...';
+      showStatus(statusText, 'processing');
       }
       return;
     }
@@ -100,7 +108,7 @@ async function checkTaskStatus() {
         action: 'getStatus'
       });
 
-      if (response && response.isGenerating) {
+    if (response && response.isGenerating) {
         isRunning = true;
         elements.startBtn.style.display = 'none';
         elements.stopBtn.style.display = 'block';
@@ -112,7 +120,7 @@ async function checkTaskStatus() {
           if (newProgress > lastDisplayedProgress) {
             lastDisplayedProgress = newProgress;
             updateProgress(newProgress, response.total);
-            showStatus(`正在生成第 ${newProgress} 张图片...`, 'processing');
+          showStatus(`正在生成第 ${newProgress} 张图片...`, 'processing');
           }
         } else {
           showStatus('正在生成图片...', 'processing');
@@ -224,7 +232,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (newProgress > lastDisplayedProgress) {
       lastDisplayedProgress = newProgress;
       updateProgress(newProgress, message.total);
-      showStatus(`正在生成第 ${newProgress} 张图片...`, 'processing');
+      const statusText = message.status === 'downloading'
+        ? `正在下载第 ${newProgress} 张图片...`
+        : `正在生成第 ${newProgress} 张图片...`;
+      showStatus(statusText, 'processing');
     }
     // 确保UI状态正确
     if (!isRunning) {

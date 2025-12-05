@@ -9,7 +9,8 @@ let taskState = {
   saveDirectory: "",
   tabId: null,
   startTime: null,
-  lastUpdate: null
+  lastUpdate: null,
+  status: "idle" // generating | downloading | idle
 };
 
 // 初始化：从存储恢复状态
@@ -100,7 +101,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       saveDirectory: message.saveDirectory || "",
       tabId: sender.tab?.id || null,
       startTime: Date.now(),
-      lastUpdate: Date.now()
+    lastUpdate: Date.now(),
+    status: message.status || "generating"
     };
     saveTaskState();
     sendResponse({ success: true });
@@ -111,6 +113,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
       // currentIndex 应该是 displayIndex（1-based），确保进度正确
       taskState.currentIndex = message.currentIndex || taskState.currentIndex;
+      if (message.status) {
+        taskState.status = message.status;
+      }
       taskState.lastUpdate = Date.now();
       saveTaskState();
       sendResponse({ success: true });
@@ -122,7 +127,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "taskComplete") {
     if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
-      clearTaskState();
+    clearTaskState();
       sendResponse({ success: true });
     } else {
       sendResponse({ success: false });
@@ -132,7 +137,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "taskStop") {
     if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
-      clearTaskState();
+    clearTaskState();
       sendResponse({ success: true });
     } else {
       sendResponse({ success: false });
@@ -142,7 +147,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "taskError") {
     if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
-      clearTaskState();
+    clearTaskState();
       sendResponse({ success: true });
     } else {
       sendResponse({ success: false });

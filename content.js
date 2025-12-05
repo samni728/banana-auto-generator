@@ -120,7 +120,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // 仅下载当前页面已有的图片，不重新生成
     saveDirectory = message.saveDirectory || "";
     const expectedCount = message.expectedCount || null;
-    downloadAllGeneratedImages(expectedCount);
+    isGenerating = true;
+    shouldStop = false;
+    downloadAllGeneratedImages(expectedCount).finally(() => {
+      isGenerating = false;
+      currentIndex = 0;
+      total = 0;
+    });
     sendResponse({ success: true });
     return true;
   }
@@ -935,15 +941,39 @@ function countExistingImages() {
 // 尝试构造“Download full size”直链（基于观察到的 rd-gg-dl / =s0-d-I 模式）
 function buildFullSizeCandidates(src) {
   if (!src) return [];
-  if (src.includes("googleusercontent.com")) {
-    const base = src.split("=")[0];
+  try {
+    const url = new URL(src);
+    if (!url.hostname.includes("googleusercontent.com")) {
+      return [src];
+    }
+
+    // 统一路径到 rd-gg-dl（与“Download full size”按钮一致）
+    let pathname = url.pathname
+      .replace("/gg/", "/rd-gg-dl/")
+      .replace("/rd-gg/", "/rd-gg-dl/");
+
+    // 去掉已有的 =sXX 或 =wXX 或 =no 等尺寸标记
+    pathname = pathname.replace(/=s\d[^/]*$/i, "");
+    pathname = pathname.replace(/=w\d[^/]*$/i, "");
+    pathname = pathname.replace(/=no[^/]*$/i, "");
+
+    // 确保 alr=yes 保留（保持和手动下载一致）
+    if (!url.searchParams.has("alr")) {
+      url.searchParams.set("alr", "yes");
+    }
+    const query = url.searchParams.toString();
+    const suffix = query ? `?${query}` : "";
+    const base = `${url.origin}${pathname}`;
+
     return [
-      `${base}=s0-d-I`,
-      `${base}=s0-d`,
-      `${base}=s0`, // 最后兜底
+      `${base}=s0-d-I${suffix}`, // 优先与手动按钮一致
+      `${base}=s0-d${suffix}`,
+      `${base}=s0${suffix}`,
+      src, // 最后兜底保持原链接
     ];
+  } catch (e) {
+    return [src];
   }
-  return [src];
 }
 
 // 批量获取图片链接 -> 转换为高清 -> 下载（按生成顺序，过滤非图片）
@@ -1000,6 +1030,25 @@ async function downloadAllGeneratedImages(expectedCount = null) {
     );
   }
 
+  const totalCount = candidates.length;
+  total = totalCount;
+  currentIndex = 0;
+
+  // 进入下载阶段，通知后台/弹窗用于进度展示
+  chrome.runtime.sendMessage({
+    action: "taskStart",
+    total: totalCount,
+    prompts: [],
+    saveDirectory,
+    status: "downloading",
+  });
+  chrome.runtime.sendMessage({
+    action: "updateProgress",
+    current: 0,
+    total: totalCount,
+    status: "downloading",
+  });
+
   // 4. 下载（严格按 index 排序，文件名从1递增）
   for (let i = 0; i < candidates.length; i++) {
     const pageNum = i + 1; // 文件名序号，严格递增
@@ -1009,11 +1058,9 @@ async function downloadAllGeneratedImages(expectedCount = null) {
     // 优先尝试“Download full size”直链模式
     const candidatesUrls = buildFullSizeCandidates(src);
     finalUrl = candidatesUrls[0] || src;
-    if (finalUrl !== src) {
-      console.log(`[Batch] Page ${pageNum}: 尝试全尺寸链接 ${finalUrl}`);
-    } else {
-      console.log(`[Batch] Page ${pageNum}: 使用原始 URL`);
-    }
+    console.log(
+      `[Batch] Page ${pageNum}: 使用优先全尺寸链接 ${finalUrl} （候选 ${candidatesUrls.length} 个）`
+    );
 
     // 强制使用 .png 扩展
     const filename = saveDirectory
@@ -1042,7 +1089,22 @@ async function downloadAllGeneratedImages(expectedCount = null) {
     });
 
     await sleep(800);
+
+    // 更新下载进度
+    currentIndex = pageNum - 1;
+    chrome.runtime.sendMessage({
+      action: "updateProgress",
+      current: pageNum,
+      total: totalCount,
+      status: "downloading",
+    });
   }
+
+  // 下载阶段结束，通知后台清理状态
+  chrome.runtime.sendMessage({ action: "taskComplete" });
+  isGenerating = false;
+  currentIndex = 0;
+  total = 0;
 }
 
 function sleep(ms) {
