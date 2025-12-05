@@ -1067,26 +1067,7 @@ async function downloadAllGeneratedImages(expectedCount = null) {
       ? `${saveDirectory}/page${pageNum}.png`
       : `page${pageNum}.png`;
 
-    await new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        {
-          action: "downloadDirectly",
-          url: finalUrl,
-          filename,
-        },
-        (res) => {
-          if (res && res.success) {
-            console.log(`[Batch] Page ${pageNum} 下载任务已发送`);
-          } else {
-            console.error(
-              `[Batch] Page ${pageNum} 下载失败`,
-              res && res.error
-            );
-          }
-          resolve();
-        }
-      );
-    });
+    await fetchAndDownloadWithAuth(finalUrl, filename, pageNum);
 
     await sleep(800);
 
@@ -1105,6 +1086,63 @@ async function downloadAllGeneratedImages(expectedCount = null) {
   isGenerating = false;
   currentIndex = 0;
   total = 0;
+}
+
+// 使用带凭证的 fetch 获取图片并下载（解决 rd-gg-dl 需身份校验导致的 pageX.html 问题）
+async function fetchAndDownloadWithAuth(url, filename, pageNum) {
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      mode: "cors",
+      credentials: "include",
+      headers: {
+        // 尽量模拟来源，减少 403/重定向
+        Referer: "https://gemini.google.com/",
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    // 简单校验返回内容类型，防止 html 报错页
+    if (!blob.type.startsWith("image/")) {
+      throw new Error(`Unexpected content-type: ${blob.type || "unknown"}`);
+    }
+    const objectUrl = URL.createObjectURL(blob);
+
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        {
+          action: "downloadDirectly",
+          url: objectUrl,
+          filename,
+        },
+        (res) => {
+          if (res && res.success) {
+            console.log(`[Batch] Page ${pageNum} 已通过 fetch+blob 发送下载`);
+          } else {
+            console.error(`[Batch] Page ${pageNum} 下载失败`, res && res.error);
+          }
+          // 下载请求发出后即可释放 blob
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+          resolve();
+        }
+      );
+    });
+  } catch (err) {
+    console.error(`[Batch] Page ${pageNum} fetch 下载失败，尝试直接下载`, err);
+    // 兜底：回退到背景页直链下载（可能返回小图或 html）
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        {
+          action: "downloadDirectly",
+          url,
+          filename,
+        },
+        () => resolve()
+      );
+    });
+  }
 }
 
 function sleep(ms) {
