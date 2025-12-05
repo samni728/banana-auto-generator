@@ -82,9 +82,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     currentPrompts = message.prompts || [];
     saveDirectory = message.saveDirectory || "";
-        currentIndex = 0;
+    currentIndex = 0;
     total = currentPrompts.length;
-        shouldStop = false;
+    shouldStop = false;
 
     // 同步状态到 background
     chrome.runtime.sendMessage({
@@ -96,8 +96,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     startGeneration(0);
   } else if (message.action === "stopGeneration") {
-        shouldStop = true;
-        isGenerating = false;
+    shouldStop = true;
+    isGenerating = false;
     stopStateSync();
 
     // 清理提交记录（停止任务）
@@ -113,12 +113,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === "getStatus") {
     // 返回 displayIndex（1-based）而不是 currentIndex（0-based）
     const displayIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
-        sendResponse({
+    sendResponse({
       isGenerating,
       current: displayIndex, // 使用 displayIndex 确保进度正确
       total: total,
-        });
-        return true;
+    });
+    return true;
   } else if (message.action === "checkExistingImages") {
     const count = countExistingImages();
     sendResponse({ count });
@@ -138,14 +138,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   } else if (message.action === "downloadStarted") {
     // 处理下载启动确认（由 background.js 发送）
-    if (window.downloadWaiters && window.downloadWaiters.has(message.filename)) {
+    if (
+      window.downloadWaiters &&
+      window.downloadWaiters.has(message.filename)
+    ) {
       const { resolve, data } = window.downloadWaiters.get(message.filename);
       window.downloadWaiters.delete(message.filename);
       resolve({ ...message, ...data });
     }
   } else if (message.action === "downloadFailed") {
     // 处理下载失败通知（由 background.js 发送）
-    if (window.downloadWaiters && window.downloadWaiters.has(message.filename)) {
+    if (
+      window.downloadWaiters &&
+      window.downloadWaiters.has(message.filename)
+    ) {
       const { reject, data } = window.downloadWaiters.get(message.filename);
       window.downloadWaiters.delete(message.filename);
       reject(new Error(`下载启动失败: ${message.statusCode || "未知错误"}`));
@@ -181,7 +187,7 @@ async function startGeneration(startFrom = 0) {
     return;
   }
 
-    isGenerating = true;
+  isGenerating = true;
   currentIndex = startFrom;
   startStateSync(); // 启动状态同步
 
@@ -213,7 +219,7 @@ async function startGeneration(startFrom = 0) {
       });
 
       // 同步状态到 background（使用 displayIndex，1-based）
-            chrome.runtime.sendMessage({
+      chrome.runtime.sendMessage({
         action: "taskUpdate",
         currentIndex: displayIndex, // displayIndex 是 1-based，确保进度正确
         total: currentPrompts.length,
@@ -298,7 +304,7 @@ async function startGeneration(startFrom = 0) {
         } else {
           throw new Error(`第 ${displayIndex} 张图片验证失败`);
         }
-    } catch (error) {
+      } catch (error) {
         console.error(
           `[Content] 第 ${displayIndex} 张图片生成失败:`,
           error.message
@@ -378,9 +384,9 @@ async function startGeneration(startFrom = 0) {
     chrome.runtime.sendMessage({
       action: "taskError",
       error: error.message || String(error),
-        });
-    } finally {
-        isGenerating = false;
+    });
+  } finally {
+    isGenerating = false;
     stopStateSync();
     // 任务结束时清理提交记录
     clearSubmissionRecords();
@@ -454,7 +460,7 @@ async function submitPrompt(prompt, currentDisplayIndex = null) {
     await sleep(500);
   }
 
-    if (!input) {
+  if (!input) {
     // 尝试进入 Create Image 模式
     await ensureCreateImageMode();
     await sleep(1000);
@@ -1013,7 +1019,7 @@ async function waitForGeneration(targetCount, timeoutSeconds = 180) {
         // 图片未完全加载，继续等待
         console.log(`[Content] 图片检测到但未完全加载，继续等待...`);
       }
-                } else {
+    } else {
       lastErrorReason = verification.reason;
       // 只在明确检测到错误时才抛出
       if (
@@ -1138,9 +1144,9 @@ async function downloadAllGeneratedImages(expectedCount = null) {
     console.warn("[Batch] ❌ 未找到任何下载按钮，尝试回退到 DOM 提取模式");
     // 回退到旧的 fetch 模式
     await downloadAllGeneratedImagesFallback(expectedCount);
-                    return;
-                }
-                
+    return;
+  }
+
   const totalCount = downloadButtons.length;
   console.log(`[Batch] ✅ 找到 ${totalCount} 个下载按钮`);
 
@@ -1215,15 +1221,27 @@ async function downloadAllGeneratedImages(expectedCount = null) {
       });
 
       // 点击按钮（触发浏览器发起 /rd-gg/ 请求）
+      console.log(
+        `[Batch] 🖱️ 准备点击按钮 ${pageNum}/${totalCount}，预期文件名: ${currentFilename}`
+      );
       button.click();
-      console.log(`[Batch] ✅ 第 ${pageNum} 个按钮已点击，等待网络请求返回 200...`);
+      console.log(
+        `[Batch] ✅ 第 ${pageNum} 个按钮已点击，等待网络请求返回 200...`
+      );
 
       // 等待下载启动确认（网络请求返回 200）
       try {
         const confirmResult = await downloadConfirmed;
         console.log(
-          `[Batch] ✅ 第 ${pageNum} 张图片下载已启动 (下载ID: ${confirmResult.downloadId}, 状态码: 200)`
+          `[Batch] ✅ 第 ${pageNum} 张图片下载已启动 (下载ID: ${confirmResult.downloadId}, 文件名: ${confirmResult.filename}, 状态码: 200)`
         );
+
+        // 验证文件名是否正确
+        if (confirmResult.filename !== currentFilename) {
+          console.warn(
+            `[Batch] ⚠️ 文件名不匹配！预期: ${currentFilename}, 实际: ${confirmResult.filename}`
+          );
+        }
 
         // 更新下载进度
         currentIndex = pageNum;
@@ -1233,8 +1251,14 @@ async function downloadAllGeneratedImages(expectedCount = null) {
           total: totalCount,
           status: "downloading",
         });
+
+        // 在继续下一个之前，稍微等待一下，确保下载任务已稳定启动
+        await sleep(500);
       } catch (err) {
-        console.error(`[Batch] ❌ 第 ${pageNum} 张图片下载启动失败:`, err.message);
+        console.error(
+          `[Batch] ❌ 第 ${pageNum} 张图片下载启动失败:`,
+          err.message
+        );
         // 继续下一个，不中断整个流程
       }
     } catch (err) {
@@ -1422,7 +1446,7 @@ async function fetchAndDownloadWithAuth(url, filename, pageNum, options = {}) {
       );
     });
     throw err; // 将错误抛出给上层以尝试下一候选
-    }
+  }
 }
 
 function sleep(ms) {
