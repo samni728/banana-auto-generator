@@ -1047,8 +1047,15 @@ function isRasterImageUrl(src) {
   return false;
 }
 
-// 计算当前页面已有的有效图片数量
+// 计算当前页面已有的有效图片数量（优先检查下载按钮，因为新逻辑基于按钮点击）
 function countExistingImages() {
+  // 优先检查下载按钮数量（新逻辑基于按钮点击）
+  const downloadButtons = findDownloadFullSizeButtons();
+  if (downloadButtons.length > 0) {
+    return downloadButtons.length;
+  }
+  
+  // 如果没有按钮，回退到检查图片数量（用于兜底）
   if (successImages && successImages.length) {
     return successImages.filter((item) => isRasterImageUrl(item.src)).length;
   }
@@ -1112,7 +1119,7 @@ async function downloadAllGeneratedImages(expectedCount = null) {
 
   // 2. 查找所有 "Download full size" 按钮（按页面顺序）
   const downloadButtons = findDownloadFullSizeButtons();
-  
+
   if (downloadButtons.length === 0) {
     console.warn("[Batch] ❌ 未找到任何下载按钮，尝试回退到 DOM 提取模式");
     // 回退到旧的 fetch 模式
@@ -1161,7 +1168,7 @@ async function downloadAllGeneratedImages(expectedCount = null) {
 
     try {
       console.log(`[Batch] 🖱️ 点击第 ${pageNum}/${totalCount} 个按钮...`);
-      
+
       // 滚动到按钮可见
       button.scrollIntoView({ behavior: "smooth", block: "center" });
       await sleep(500);
@@ -1189,12 +1196,12 @@ async function downloadAllGeneratedImages(expectedCount = null) {
 
   // 6. 等待所有下载启动（后台会自动关闭监听）
   console.log(`[Batch] ✅ 所有按钮已点击，等待下载完成...`);
-  
+
   // 下载阶段结束，通知后台清理状态
   await sleep(3000); // 给后台一些时间完成最后的下载启动
   chrome.runtime.sendMessage({ action: "stopSniffing" });
   chrome.runtime.sendMessage({ action: "taskComplete" });
-  
+
   isGenerating = false;
   currentIndex = 0;
   total = 0;
@@ -1225,9 +1232,13 @@ function findDownloadFullSizeButtons() {
         if (btn.tagName === "MAT-ICON") {
           button = btn.closest("button") || btn.parentElement;
         }
-        
+
         // 检查按钮文本或 aria-label 是否包含下载相关关键词
-        const text = (button.textContent || button.getAttribute("aria-label") || "").toLowerCase();
+        const text = (
+          button.textContent ||
+          button.getAttribute("aria-label") ||
+          ""
+        ).toLowerCase();
         if (
           text.includes("download") ||
           text.includes("下载") ||
@@ -1258,7 +1269,7 @@ function findDownloadFullSizeButtons() {
 // 兜底方案：如果找不到按钮，回退到旧的 fetch 模式
 async function downloadAllGeneratedImagesFallback(expectedCount = null) {
   console.log("[Batch] ⚠️ 使用兜底 fetch 模式...");
-  
+
   // 这里保留原来的 fetch 逻辑作为兜底
   const allImages = Array.from(document.querySelectorAll("img"));
   const validImages = allImages.filter((img) => {
