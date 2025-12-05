@@ -167,9 +167,7 @@ chrome.webRequest.onBeforeRequest.addListener(
       // Gemini 的请求有严重延迟（36-123秒），如果提前关闭监听器，延迟的请求无法被捕获
       // 改为：等待 content script 主动发送 stopSniffing 消息
       if (downloadQueue.length === 0) {
-        console.log(
-          `[BG] ⚠️ 队列已空，但保持监听器开启（等待可能的延迟请求）`
-        );
+        console.log(`[BG] ⚠️ 队列已空，但保持监听器开启（等待可能的延迟请求）`);
         // 不关闭 isSniffing，继续监听可能的延迟请求
         // 监听器将在 content script 发送 stopSniffing 时关闭
       }
