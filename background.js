@@ -72,6 +72,9 @@ async function clearTaskState() {
   console.log("[BG] 任务状态已清理");
 }
 
+// 存储每个请求的下载ID，用于跟踪状态
+const requestDownloadMap = new Map(); // requestId -> { downloadId, filename, tabId }
+
 // 核心：监听网络请求，捕获 /rd-gg/ 高清图链接
 chrome.webRequest.onBeforeRequest.addListener(
   function (details) {
@@ -85,7 +88,9 @@ chrome.webRequest.onBeforeRequest.addListener(
       const currentFilename = downloadQueue.shift();
 
       if (currentFilename) {
-        console.log(`[BG] 🎯 捕获到高清链接: ${details.url.substring(0, 100)}...`);
+        console.log(
+          `[BG] 🎯 捕获到高清链接: ${details.url.substring(0, 100)}...`
+        );
         console.log(`[BG] 准备保存为: ${currentFilename}`);
 
         // 标记已捕获，避免重复
@@ -101,12 +106,22 @@ chrome.webRequest.onBeforeRequest.addListener(
           },
           (downloadId) => {
             if (chrome.runtime.lastError) {
-              console.error(
-                "[BG] 下载失败:",
-                chrome.runtime.lastError.message
-              );
+              console.error("[BG] 下载失败:", chrome.runtime.lastError.message);
+              // 通知 content script 下载失败
+              if (details.tabId) {
+                chrome.tabs.sendMessage(details.tabId, {
+                  action: "downloadFailed",
+                  filename: currentFilename,
+                }).catch(() => {});
+              }
             } else {
               console.log(`[BG] ✅ 下载任务已建立, ID: ${downloadId}`);
+              // 存储请求ID和下载ID的映射，用于后续跟踪
+              requestDownloadMap.set(details.requestId, {
+                downloadId,
+                filename: currentFilename,
+                tabId: details.tabId,
+              });
             }
           }
         );
@@ -116,14 +131,6 @@ chrome.webRequest.onBeforeRequest.addListener(
           isSniffing = false;
           capturedUrls.clear();
           console.log("[BG] 所有下载已启动，关闭监听");
-          // 通知 content script 任务全部完成（可选）
-          if (details.tabId) {
-            chrome.tabs.sendMessage(details.tabId, {
-              action: "allDownloadsStarted",
-            }).catch(() => {
-              // Content script 可能未就绪，忽略错误
-            });
-          }
         }
       }
     }
@@ -132,6 +139,50 @@ chrome.webRequest.onBeforeRequest.addListener(
   },
   { urls: ["*://*.googleusercontent.com/rd-gg/*"] }, // 过滤 Log 中的特征域名
   [] // Manifest V3 不支持 blocking，使用空数组
+);
+
+// 监听网络请求完成（响应状态码）
+chrome.webRequest.onCompleted.addListener(
+  function (details) {
+    // 检查是否是我们要监控的请求
+    if (requestDownloadMap.has(details.requestId)) {
+      const downloadInfo = requestDownloadMap.get(details.requestId);
+      
+      if (details.statusCode === 200) {
+        console.log(
+          `[BG] ✅ 请求成功 (200): ${downloadInfo.filename} (下载ID: ${downloadInfo.downloadId})`
+        );
+        
+        // 通知 content script 下载已成功启动
+        if (downloadInfo.tabId) {
+          chrome.tabs.sendMessage(downloadInfo.tabId, {
+            action: "downloadStarted",
+            filename: downloadInfo.filename,
+            downloadId: downloadInfo.downloadId,
+          }).catch(() => {
+            // Content script 可能未就绪，忽略错误
+          });
+        }
+      } else {
+        console.warn(
+          `[BG] ⚠️ 请求状态码异常 (${details.statusCode}): ${downloadInfo.filename}`
+        );
+        
+        // 通知 content script 下载失败
+        if (downloadInfo.tabId) {
+          chrome.tabs.sendMessage(downloadInfo.tabId, {
+            action: "downloadFailed",
+            filename: downloadInfo.filename,
+            statusCode: details.statusCode,
+          }).catch(() => {});
+        }
+      }
+      
+      // 清理映射（请求已完成）
+      requestDownloadMap.delete(details.requestId);
+    }
+  },
+  { urls: ["*://*.googleusercontent.com/rd-gg/*"] }
 );
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -152,6 +203,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     isSniffing = false;
     downloadQueue = [];
     capturedUrls.clear();
+    requestDownloadMap.clear(); // 清理请求映射
     console.log("[BG] 停止监听");
     sendResponse({ success: true });
     return true;

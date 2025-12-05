@@ -82,9 +82,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     currentPrompts = message.prompts || [];
     saveDirectory = message.saveDirectory || "";
-    currentIndex = 0;
+        currentIndex = 0;
     total = currentPrompts.length;
-    shouldStop = false;
+        shouldStop = false;
 
     // 同步状态到 background
     chrome.runtime.sendMessage({
@@ -96,8 +96,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     startGeneration(0);
   } else if (message.action === "stopGeneration") {
-    shouldStop = true;
-    isGenerating = false;
+        shouldStop = true;
+        isGenerating = false;
     stopStateSync();
 
     // 清理提交记录（停止任务）
@@ -113,12 +113,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === "getStatus") {
     // 返回 displayIndex（1-based）而不是 currentIndex（0-based）
     const displayIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
-    sendResponse({
+        sendResponse({
       isGenerating,
       current: displayIndex, // 使用 displayIndex 确保进度正确
       total: total,
-    });
-    return true;
+        });
+        return true;
   } else if (message.action === "checkExistingImages") {
     const count = countExistingImages();
     sendResponse({ count });
@@ -136,6 +136,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     sendResponse({ success: true });
     return true;
+  } else if (message.action === "downloadStarted") {
+    // 处理下载启动确认（由 background.js 发送）
+    if (window.downloadWaiters && window.downloadWaiters.has(message.filename)) {
+      const { resolve, data } = window.downloadWaiters.get(message.filename);
+      window.downloadWaiters.delete(message.filename);
+      resolve({ ...message, ...data });
+    }
+  } else if (message.action === "downloadFailed") {
+    // 处理下载失败通知（由 background.js 发送）
+    if (window.downloadWaiters && window.downloadWaiters.has(message.filename)) {
+      const { reject, data } = window.downloadWaiters.get(message.filename);
+      window.downloadWaiters.delete(message.filename);
+      reject(new Error(`下载启动失败: ${message.statusCode || "未知错误"}`));
+    }
   }
 });
 
@@ -167,7 +181,7 @@ async function startGeneration(startFrom = 0) {
     return;
   }
 
-  isGenerating = true;
+    isGenerating = true;
   currentIndex = startFrom;
   startStateSync(); // 启动状态同步
 
@@ -199,7 +213,7 @@ async function startGeneration(startFrom = 0) {
       });
 
       // 同步状态到 background（使用 displayIndex，1-based）
-      chrome.runtime.sendMessage({
+            chrome.runtime.sendMessage({
         action: "taskUpdate",
         currentIndex: displayIndex, // displayIndex 是 1-based，确保进度正确
         total: currentPrompts.length,
@@ -284,7 +298,7 @@ async function startGeneration(startFrom = 0) {
         } else {
           throw new Error(`第 ${displayIndex} 张图片验证失败`);
         }
-      } catch (error) {
+    } catch (error) {
         console.error(
           `[Content] 第 ${displayIndex} 张图片生成失败:`,
           error.message
@@ -364,9 +378,9 @@ async function startGeneration(startFrom = 0) {
     chrome.runtime.sendMessage({
       action: "taskError",
       error: error.message || String(error),
-    });
-  } finally {
-    isGenerating = false;
+        });
+    } finally {
+        isGenerating = false;
     stopStateSync();
     // 任务结束时清理提交记录
     clearSubmissionRecords();
@@ -440,7 +454,7 @@ async function submitPrompt(prompt, currentDisplayIndex = null) {
     await sleep(500);
   }
 
-  if (!input) {
+    if (!input) {
     // 尝试进入 Create Image 模式
     await ensureCreateImageMode();
     await sleep(1000);
@@ -999,7 +1013,7 @@ async function waitForGeneration(targetCount, timeoutSeconds = 180) {
         // 图片未完全加载，继续等待
         console.log(`[Content] 图片检测到但未完全加载，继续等待...`);
       }
-    } else {
+                } else {
       lastErrorReason = verification.reason;
       // 只在明确检测到错误时才抛出
       if (
@@ -1054,7 +1068,7 @@ function countExistingImages() {
   if (downloadButtons.length > 0) {
     return downloadButtons.length;
   }
-  
+
   // 如果没有按钮，回退到检查图片数量（用于兜底）
   if (successImages && successImages.length) {
     return successImages.filter((item) => isRasterImageUrl(item.src)).length;
@@ -1124,9 +1138,9 @@ async function downloadAllGeneratedImages(expectedCount = null) {
     console.warn("[Batch] ❌ 未找到任何下载按钮，尝试回退到 DOM 提取模式");
     // 回退到旧的 fetch 模式
     await downloadAllGeneratedImagesFallback(expectedCount);
-    return;
-  }
-
+                    return;
+                }
+                
   const totalCount = downloadButtons.length;
   console.log(`[Batch] ✅ 找到 ${totalCount} 个下载按钮`);
 
@@ -1161,10 +1175,16 @@ async function downloadAllGeneratedImages(expectedCount = null) {
   });
   console.log(`[Batch] 📡 后台监听已启动，准备点击 ${totalCount} 个按钮`);
 
-  // 5. 慢速依次点击按钮，让后台捕获网络请求
+  // 初始化下载等待器 Map（用于存储等待中的 Promise）
+  if (!window.downloadWaiters) {
+    window.downloadWaiters = new Map();
+  }
+
+  // 5. 慢速依次点击按钮，让后台捕获网络请求，并等待每个请求返回 200
   for (let i = 0; i < downloadButtons.length; i++) {
     const pageNum = i + 1;
     const button = downloadButtons[i];
+    const currentFilename = filenames[i];
 
     try {
       console.log(`[Batch] 🖱️ 点击第 ${pageNum}/${totalCount} 个按钮...`);
@@ -1173,26 +1193,57 @@ async function downloadAllGeneratedImages(expectedCount = null) {
       button.scrollIntoView({ behavior: "smooth", block: "center" });
       await sleep(500);
 
+      // 创建 Promise 来等待下载启动确认
+      const downloadConfirmed = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          window.downloadWaiters.delete(currentFilename);
+          reject(new Error(`等待下载启动超时 (${pageNum}/${totalCount})`));
+        }, 15000); // 15秒超时
+
+        // 将 resolve/reject 存储到 Map 中，等待全局消息监听器处理
+        window.downloadWaiters.set(currentFilename, {
+          resolve: (data) => {
+            clearTimeout(timeout);
+            resolve(data);
+          },
+          reject: (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          },
+          data: { pageNum, totalCount },
+        });
+      });
+
       // 点击按钮（触发浏览器发起 /rd-gg/ 请求）
       button.click();
-      console.log(`[Batch] ✅ 第 ${pageNum} 个按钮已点击，等待后台捕获请求...`);
+      console.log(`[Batch] ✅ 第 ${pageNum} 个按钮已点击，等待网络请求返回 200...`);
 
-      // 重要：给足够的时间让请求发出去被后台捕获
-      // Gemini 的按钮点击后可能会有 1-2 秒的延迟才发起网络请求
-      await sleep(2500);
+      // 等待下载启动确认（网络请求返回 200）
+      try {
+        const confirmResult = await downloadConfirmed;
+        console.log(
+          `[Batch] ✅ 第 ${pageNum} 张图片下载已启动 (下载ID: ${confirmResult.downloadId}, 状态码: 200)`
+        );
 
-      // 更新下载进度
-      currentIndex = pageNum;
-      chrome.runtime.sendMessage({
-        action: "updateProgress",
-        current: pageNum,
-        total: totalCount,
-        status: "downloading",
-      });
+        // 更新下载进度
+        currentIndex = pageNum;
+        chrome.runtime.sendMessage({
+          action: "updateProgress",
+          current: pageNum,
+          total: totalCount,
+          status: "downloading",
+        });
+      } catch (err) {
+        console.error(`[Batch] ❌ 第 ${pageNum} 张图片下载启动失败:`, err.message);
+        // 继续下一个，不中断整个流程
+      }
     } catch (err) {
       console.error(`[Batch] ❌ 点击第 ${pageNum} 个按钮失败:`, err);
     }
   }
+
+  // 清理等待器 Map
+  window.downloadWaiters.clear();
 
   // 6. 等待所有下载启动（后台会自动关闭监听）
   console.log(`[Batch] ✅ 所有按钮已点击，等待下载完成...`);
@@ -1371,7 +1422,7 @@ async function fetchAndDownloadWithAuth(url, filename, pageNum, options = {}) {
       );
     });
     throw err; // 将错误抛出给上层以尝试下一候选
-  }
+    }
 }
 
 function sleep(ms) {
