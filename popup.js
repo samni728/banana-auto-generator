@@ -14,6 +14,13 @@ const elements = {
   progressFill: document.getElementById('progressFill'),
   progressText: document.getElementById('progressText')
 };
+// 动态创建“仅下载当前页图片”按钮（当页面已有图片时才显示）
+const downloadExistingBtn = document.createElement('button');
+downloadExistingBtn.id = 'downloadExistingBtn';
+downloadExistingBtn.textContent = '下载当前页图片';
+downloadExistingBtn.style.display = 'none';
+downloadExistingBtn.style.marginLeft = '8px';
+downloadExistingBtn.className = 'btn secondary';
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
@@ -38,16 +45,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 检查任务状态（优先从 background 查询持久化状态）
   await checkTaskStatus();
+  // 检查当前页是否已有可下载图片，决定是否显示一键下载按钮
+  await checkExistingImagesAndToggle();
   
   // 定期更新状态（每2秒）
   const statusInterval = setInterval(async () => {
     await checkTaskStatus();
+    await checkExistingImagesAndToggle();
   }, 2000);
   
   // 页面关闭时清理定时器
   window.addEventListener('beforeunload', () => {
     clearInterval(statusInterval);
   });
+
+  // 将下载按钮插入到停止按钮后面
+  const stopParent = elements.stopBtn.parentElement || elements.stopBtn;
+  stopParent.appendChild(downloadExistingBtn);
 });
 
 // 记录当前显示的进度（确保只增不减）
@@ -227,6 +241,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     showStatus(`❌ 错误: ${message.error}`, 'error');
     resetUI();
     lastDisplayedProgress = 0; // 重置进度
+  }
+});
+
+// 检查当前页是否已有可下载图片，控制“下载当前页图片”按钮显示
+async function checkExistingImagesAndToggle() {
+  if (!currentTab) return;
+  try {
+    const res = await chrome.tabs.sendMessage(currentTab.id, { action: 'checkExistingImages' });
+    if (res && res.count && res.count > 0) {
+      downloadExistingBtn.style.display = 'inline-block';
+      downloadExistingBtn.disabled = false;
+      downloadExistingBtn.title = `检测到 ${res.count} 张图片，可直接下载`;
+    } else {
+      downloadExistingBtn.style.display = 'none';
+    }
+  } catch (e) {
+    downloadExistingBtn.style.display = 'none';
+  }
+}
+
+// 仅下载当前页已有图片
+downloadExistingBtn.addEventListener('click', async () => {
+  if (!currentTab) return;
+  const dir = elements.saveDirectory.value.trim();
+  downloadExistingBtn.disabled = true;
+  showStatus('正在下载当前页图片...', 'processing');
+  try {
+    const res = await chrome.tabs.sendMessage(currentTab.id, {
+      action: 'downloadExisting',
+      saveDirectory: dir
+    });
+    if (res && res.success) {
+      showStatus('开始下载当前页图片...', 'success');
+    } else {
+      showStatus('下载启动失败', 'error');
+    }
+  } catch (e) {
+    showStatus('下载启动失败，请刷新页面重试', 'error');
+  } finally {
+    setTimeout(() => {
+      downloadExistingBtn.disabled = false;
+    }, 2000);
   }
 });
 

@@ -112,6 +112,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       total: total,
     });
     return true;
+  } else if (message.action === "checkExistingImages") {
+    const count = countExistingImages();
+    sendResponse({ count });
+    return true;
+  } else if (message.action === "downloadExisting") {
+    // 仅下载当前页面已有的图片，不重新生成
+    saveDirectory = message.saveDirectory || "";
+    const expectedCount = message.expectedCount || null;
+    downloadAllGeneratedImages(expectedCount);
+    sendResponse({ success: true });
+    return true;
   }
 });
 
@@ -904,6 +915,23 @@ function isRasterImageUrl(src) {
   return false;
 }
 
+// 计算当前页面已有的有效图片数量
+function countExistingImages() {
+  if (successImages && successImages.length) {
+    return successImages.filter((item) => isRasterImageUrl(item.src)).length;
+  }
+  const allImages = Array.from(document.querySelectorAll("img"));
+  const validImages = allImages.filter((img) => {
+    const src = img.src || "";
+    if (!isRasterImageUrl(src)) return false;
+    if (!img.complete || img.naturalWidth === 0) return false;
+    if (src.includes("nano-banana")) return false;
+    if (src.includes("profile_photo")) return false;
+    return img.naturalWidth > 200;
+  });
+  return validImages.length;
+}
+
 // 尝试构造“Download full size”直链（基于观察到的 rd-gg-dl / =s0-d-I 模式）
 function buildFullSizeCandidates(src) {
   if (!src) return [];
@@ -919,7 +947,7 @@ function buildFullSizeCandidates(src) {
 }
 
 // 批量获取图片链接 -> 转换为高清 -> 下载（按生成顺序，过滤非图片）
-async function downloadAllGeneratedImages() {
+async function downloadAllGeneratedImages(expectedCount = null) {
   console.log("[Batch] 开始提取图片链接...");
 
   // 1. 再等一下，确保最后一张图完全渲染
@@ -954,7 +982,7 @@ async function downloadAllGeneratedImages() {
       return;
     }
 
-    const count = currentPrompts.length;
+    const count = expectedCount !== null ? expectedCount : (currentPrompts.length || validImages.length);
     const targetImages = validImages.slice(-count);
     candidates = targetImages.map((img, idx) => ({
       index: idx + 1,
