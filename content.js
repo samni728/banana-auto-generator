@@ -1203,7 +1203,12 @@ async function downloadAllGeneratedImages(expectedCount = null) {
       const downloadConfirmed = new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           window.downloadWaiters.delete(currentFilename);
-          reject(new Error(`等待下载启动超时 (${pageNum}/${totalCount})`));
+          // 【优化】根据 fix.md：超时时间保留 15s 是 OK 的，因为现在后台会立刻响应，通常不会触发这个超时
+          reject(
+            new Error(
+              `等待下载启动超时 (${pageNum}/${totalCount}) - 未捕获到网络请求`
+            )
+          );
         }, 15000); // 15秒超时
 
         // 将 resolve/reject 存储到 Map 中，等待全局消息监听器处理

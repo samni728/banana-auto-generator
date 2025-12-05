@@ -72,19 +72,24 @@ async function clearTaskState() {
   console.log("[BG] 任务状态已清理");
 }
 
-// 存储每个请求的下载ID，用于跟踪状态
-const requestDownloadMap = new Map(); // requestId -> { downloadId, filename, tabId }
+// 【已删除】requestDownloadMap 不再需要，因为不再使用 onCompleted 监听器
+// 之前的代码：const requestDownloadMap = new Map();
 
 // 核心：监听网络请求，捕获 /rd-gg/ 高清图链接
 chrome.webRequest.onBeforeRequest.addListener(
   function (details) {
-    // 只在任务进行中，且 URL 包含 /rd-gg/ (高清原图特征) 时触发
+    // 【核心修复1】根据 fix.md：必须明确排除 /rd-gg-dl/，避免下载到 833 字节的元数据文件
+    // /rd-gg-dl/ 也包含 /rd-gg/，但它是假文件，不是真正的图片
+    const isTargetUrl =
+      details.url.includes("/rd-gg/") && !details.url.includes("/rd-gg-dl/");
+
+    // 只在任务进行中，且 URL 是目标 URL 时触发
     // 【优化】根据 fix.md 建议：检查完整 URL 和基础 URL（去掉查询参数）是否已被捕获
     const baseUrl = details.url.split("?")[0];
     const isDuplicate =
       capturedUrls.has(details.url) || capturedUrls.has(baseUrl);
 
-    if (isSniffing && details.url.includes("/rd-gg/") && !isDuplicate) {
+    if (isSniffing && isTargetUrl && !isDuplicate) {
       // 检查队列是否为空
       if (downloadQueue.length === 0) {
         console.warn(
@@ -141,12 +146,19 @@ chrome.webRequest.onBeforeRequest.addListener(
             console.log(
               `[BG] ✅ 下载任务已建立: ${currentFilename} (下载ID: ${downloadId}, 请求ID: ${details.requestId})`
             );
-            // 存储请求ID和下载ID的映射，用于后续跟踪
-            requestDownloadMap.set(details.requestId, {
-              downloadId,
-              filename: currentFilename,
-              tabId: details.tabId,
-            });
+            // 【核心修复2】根据 fix.md：在这里直接通知前台成功！不要去等 onCompleted！
+            // 当网络请求被识别为"下载文件"时，onCompleted 事件往往不会触发，导致超时
+            if (details.tabId >= 0) {
+              chrome.tabs
+                .sendMessage(details.tabId, {
+                  action: "downloadStarted", // 告诉前台：搞定了，继续下一个
+                  filename: currentFilename,
+                  downloadId: downloadId,
+                })
+                .catch(() => {
+                  // Content script 可能未就绪，忽略错误
+                });
+            }
           }
         }
       );
@@ -164,9 +176,7 @@ chrome.webRequest.onBeforeRequest.addListener(
       const isAlreadyCaptured =
         capturedUrls.has(details.url) || capturedUrls.has(checkBaseUrl);
       if (isAlreadyCaptured) {
-        console.log(
-          `[BG] ⏭️ 跳过重复URL: ${details.url.substring(0, 80)}...`
-        );
+        console.log(`[BG] ⏭️ 跳过重复URL: ${details.url.substring(0, 80)}...`);
       }
     }
     // 不阻塞请求，让页面原本的逻辑继续
@@ -176,53 +186,10 @@ chrome.webRequest.onBeforeRequest.addListener(
   [] // Manifest V3 不支持 blocking，使用空数组
 );
 
-// 监听网络请求完成（响应状态码）
-chrome.webRequest.onCompleted.addListener(
-  function (details) {
-    // 检查是否是我们要监控的请求
-    if (requestDownloadMap.has(details.requestId)) {
-      const downloadInfo = requestDownloadMap.get(details.requestId);
-
-      if (details.statusCode === 200) {
-        console.log(
-          `[BG] ✅ 请求成功 (200): ${downloadInfo.filename} (下载ID: ${downloadInfo.downloadId})`
-        );
-
-        // 通知 content script 下载已成功启动
-        if (downloadInfo.tabId) {
-          chrome.tabs
-            .sendMessage(downloadInfo.tabId, {
-              action: "downloadStarted",
-              filename: downloadInfo.filename,
-              downloadId: downloadInfo.downloadId,
-            })
-            .catch(() => {
-              // Content script 可能未就绪，忽略错误
-            });
-        }
-      } else {
-        console.warn(
-          `[BG] ⚠️ 请求状态码异常 (${details.statusCode}): ${downloadInfo.filename}`
-        );
-
-        // 通知 content script 下载失败
-        if (downloadInfo.tabId) {
-          chrome.tabs
-            .sendMessage(downloadInfo.tabId, {
-              action: "downloadFailed",
-              filename: downloadInfo.filename,
-              statusCode: details.statusCode,
-            })
-            .catch(() => {});
-        }
-      }
-
-      // 清理映射（请求已完成）
-      requestDownloadMap.delete(details.requestId);
-    }
-  },
-  { urls: ["*://*.googleusercontent.com/rd-gg/*"] }
-);
+// 【核心修复3】根据 fix.md：删除 onCompleted 监听器
+// 原因：当网络请求被识别为"下载文件"时，onCompleted 事件往往不会触发，导致超时
+// 解决方案：在 onBeforeRequest 的 chrome.downloads.download 回调里直接发送成功消息
+// 这个监听器是导致超时的罪魁祸首，已删除
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 开始监听网络请求（由 content script 调用）
@@ -231,7 +198,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     isSniffing = true;
     downloadQueue = [...(message.filenames || [])]; // 创建新数组，避免引用问题
     capturedUrls.clear(); // 清空已捕获记录
-    requestDownloadMap.clear(); // 清空请求映射
     console.log(
       `[BG] 🎬 开始监听高清图请求，队列长度: ${downloadQueue.length}`
     );
@@ -252,7 +218,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     isSniffing = false;
     downloadQueue = [];
     capturedUrls.clear();
-    requestDownloadMap.clear(); // 清理请求映射
     console.log("[BG] 停止监听");
     sendResponse({ success: true });
     return true;
