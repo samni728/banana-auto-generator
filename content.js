@@ -1252,14 +1252,18 @@ async function downloadAllGeneratedImages(expectedCount = null) {
           status: "downloading",
         });
 
-        // 在继续下一个之前，稍微等待一下，确保下载任务已稳定启动
-        await sleep(500);
+        // 【优化】根据 fix.md 建议：在继续下一个之前，等待更长时间（3000ms）
+        // 确保下载任务已稳定启动，避免并发问题
+        console.log(`[Batch] ⏳ 等待 3 秒后继续下一个...`);
+        await sleep(3000);
       } catch (err) {
         console.error(
           `[Batch] ❌ 第 ${pageNum} 张图片下载启动失败:`,
           err.message
         );
         // 继续下一个，不中断整个流程
+        // 但也要等待一段时间，避免连续失败
+        await sleep(2000);
       }
     } catch (err) {
       console.error(`[Batch] ❌ 点击第 ${pageNum} 个按钮失败:`, err);

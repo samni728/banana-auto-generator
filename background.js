@@ -79,14 +79,17 @@ const requestDownloadMap = new Map(); // requestId -> { downloadId, filename, ta
 chrome.webRequest.onBeforeRequest.addListener(
   function (details) {
     // 只在任务进行中，且 URL 包含 /rd-gg/ (高清原图特征) 时触发
-    if (
-      isSniffing &&
-      details.url.includes("/rd-gg/") &&
-      !capturedUrls.has(details.url)
-    ) {
+    // 【优化】根据 fix.md 建议：检查完整 URL 和基础 URL（去掉查询参数）是否已被捕获
+    const baseUrl = details.url.split("?")[0];
+    const isDuplicate =
+      capturedUrls.has(details.url) || capturedUrls.has(baseUrl);
+
+    if (isSniffing && details.url.includes("/rd-gg/") && !isDuplicate) {
       // 检查队列是否为空
       if (downloadQueue.length === 0) {
-        console.warn(`[BG] ⚠️ 队列已空，但收到新请求: ${details.url.substring(0, 80)}...`);
+        console.warn(
+          `[BG] ⚠️ 队列已空，但收到新请求: ${details.url.substring(0, 80)}...`
+        );
         return {};
       }
 
@@ -95,12 +98,21 @@ chrome.webRequest.onBeforeRequest.addListener(
       const remainingCount = downloadQueue.length;
 
       console.log(
-        `[BG] 🎯 捕获到高清链接 (请求ID: ${details.requestId}): ${details.url.substring(0, 80)}...`
+        `[BG] 🎯 捕获到高清链接 (请求ID: ${
+          details.requestId
+        }): ${details.url.substring(0, 80)}...`
       );
-      console.log(`[BG] 📝 分配文件名: ${currentFilename} (剩余队列: ${remainingCount})`);
+      console.log(
+        `[BG] 📝 分配文件名: ${currentFilename} (剩余队列: ${remainingCount})`
+      );
 
       // 标记已捕获，避免重复
+      // 【优化】根据 fix.md 建议：如果 URL 带有时间戳参数，去重可能失效
+      // 我们同时保存完整 URL 和基础 URL（去掉查询参数）进行双重去重
       capturedUrls.add(details.url);
+      if (baseUrl !== details.url) {
+        capturedUrls.add(baseUrl); // 也标记基础 URL，防止时间戳变体
+      }
 
       // 发起真实下载（使用捕获到的真实 URL，带完整 cookies 和 referer）
       chrome.downloads.download(
@@ -147,9 +159,15 @@ chrome.webRequest.onBeforeRequest.addListener(
       }
     } else if (isSniffing && details.url.includes("/rd-gg/")) {
       // URL 已被捕获过，跳过
-      console.log(
-        `[BG] ⏭️ 跳过重复URL: ${details.url.substring(0, 80)}...`
-      );
+      // 【优化】检查完整 URL 和基础 URL 是否都被捕获过
+      const checkBaseUrl = details.url.split("?")[0];
+      const isAlreadyCaptured =
+        capturedUrls.has(details.url) || capturedUrls.has(checkBaseUrl);
+      if (isAlreadyCaptured) {
+        console.log(
+          `[BG] ⏭️ 跳过重复URL: ${details.url.substring(0, 80)}...`
+        );
+      }
     }
     // 不阻塞请求，让页面原本的逻辑继续
     return {};
@@ -209,6 +227,7 @@ chrome.webRequest.onCompleted.addListener(
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 开始监听网络请求（由 content script 调用）
   if (message.action === "startSniffing") {
+    // 【优化】根据 fix.md 建议：确保在开始新任务前清理所有状态
     isSniffing = true;
     downloadQueue = [...(message.filenames || [])]; // 创建新数组，避免引用问题
     capturedUrls.clear(); // 清空已捕获记录
@@ -217,6 +236,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       `[BG] 🎬 开始监听高清图请求，队列长度: ${downloadQueue.length}`
     );
     console.log(`[BG] 📋 队列内容:`, downloadQueue);
+    // 【优化】验证队列不为空
+    if (downloadQueue.length === 0) {
+      console.warn(`[BG] ⚠️ 警告：队列为空，无法开始下载任务`);
+      isSniffing = false;
+      sendResponse({ success: false, error: "队列为空" });
+      return true;
+    }
     sendResponse({ success: true });
     return true;
   }
