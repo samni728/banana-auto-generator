@@ -13,19 +13,24 @@ let stateSyncInterval = null;
 let successImages = [];
 
 // 页面加载时检查并恢复任务
-window.addEventListener('load', async () => {
+window.addEventListener("load", async () => {
   await checkAndRestoreTask();
 });
 
 // 如果页面已经加载完成，立即检查
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
+if (
+  document.readyState === "complete" ||
+  document.readyState === "interactive"
+) {
   checkAndRestoreTask();
 }
 
 // 检查并恢复任务
 async function checkAndRestoreTask() {
   try {
-    const response = await chrome.runtime.sendMessage({ action: "restoreTask" });
+    const response = await chrome.runtime.sendMessage({
+      action: "restoreTask",
+    });
     if (response && response.success && response.state) {
       console.log("[Content] 检测到未完成的任务，正在恢复...", response.state);
       currentPrompts = response.state.prompts || [];
@@ -33,7 +38,7 @@ async function checkAndRestoreTask() {
       currentIndex = response.state.currentIndex || 0;
       total = response.state.total || 0;
       shouldStop = false;
-      
+
       // 如果任务未完成，继续执行
       if (currentIndex < total && !isGenerating) {
         console.log(`[Content] 恢复任务：从第 ${currentIndex + 1} 张继续`);
@@ -50,11 +55,13 @@ function startStateSync() {
   if (stateSyncInterval) clearInterval(stateSyncInterval);
   stateSyncInterval = setInterval(() => {
     if (isGenerating) {
-      chrome.runtime.sendMessage({
-        action: "taskUpdate",
-        currentIndex: currentIndex,
-        total: total
-      }).catch(err => console.error("[Content] 状态同步失败:", err));
+      chrome.runtime
+        .sendMessage({
+          action: "taskUpdate",
+          currentIndex: currentIndex,
+          total: total,
+        })
+        .catch((err) => console.error("[Content] 状态同步失败:", err));
     }
   }, 2000); // 每2秒同步一次
 }
@@ -72,30 +79,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "startGeneration") {
     // 清理之前的提交记录（开始新任务）
     clearSubmissionRecords();
-    
+
     currentPrompts = message.prompts || [];
     saveDirectory = message.saveDirectory || "";
     currentIndex = 0;
     total = currentPrompts.length;
     shouldStop = false;
-    
+
     // 同步状态到 background
     chrome.runtime.sendMessage({
       action: "taskStart",
       prompts: currentPrompts,
       saveDirectory: saveDirectory,
-      total: total
+      total: total,
     });
-    
+
     startGeneration(0);
   } else if (message.action === "stopGeneration") {
     shouldStop = true;
     isGenerating = false;
     stopStateSync();
-    
+
     // 清理提交记录（停止任务）
     clearSubmissionRecords();
-    
+
     // 通知 background 任务已停止
     chrome.runtime.sendMessage({ action: "taskStop" });
   } else if (message.action === "clearSubmissionRecords") {
@@ -159,7 +166,7 @@ async function startGeneration(startFrom = 0) {
     await downloadAllGeneratedImages();
     return;
   }
-  
+
   isGenerating = true;
   currentIndex = startFrom;
   startStateSync(); // 启动状态同步
@@ -172,13 +179,13 @@ async function startGeneration(startFrom = 0) {
     // 记录成功生成的图片索引和对应图片
     const successfullyGenerated = [];
     successImages = [];
-    
+
     for (let i = startFrom; i < currentPrompts.length; i++) {
       if (shouldStop) {
         console.log("[Content] 用户停止任务");
         break;
       }
-      
+
       currentIndex = i;
       const displayIndex = i + 1;
       let generationSuccess = false;
@@ -188,48 +195,58 @@ async function startGeneration(startFrom = 0) {
         action: "updateProgress",
         current: displayIndex,
         total: currentPrompts.length,
-        status: "generating"
+        status: "generating",
       });
 
       // 同步状态到 background（使用 displayIndex，1-based）
       chrome.runtime.sendMessage({
         action: "taskUpdate",
         currentIndex: displayIndex, // displayIndex 是 1-based，确保进度正确
-        total: currentPrompts.length
+        total: currentPrompts.length,
       });
 
       try {
         // 提交前检查是否被风控
         const rateLimitCheck = detectRateLimitOrBlock();
         if (rateLimitCheck.blocked) {
-          console.warn(`[Content] ⚠️ 检测到可能被风控: ${rateLimitCheck.reason} (类型: ${rateLimitCheck.type})`);
+          console.warn(
+            `[Content] ⚠️ 检测到可能被风控: ${rateLimitCheck.reason} (类型: ${rateLimitCheck.type})`
+          );
           chrome.runtime.sendMessage({
             action: "updateProgress",
             current: displayIndex,
             total: currentPrompts.length,
             status: "warning",
-            warning: `可能被限制: ${rateLimitCheck.reason}`
+            warning: `可能被限制: ${rateLimitCheck.reason}`,
           });
           // 等待更长时间后重试
           await sleep(10000); // 等待10秒
           // 再次检查
           const recheck = detectRateLimitOrBlock();
           if (recheck.blocked) {
-            throw new Error(`检测到风控限制: ${rateLimitCheck.reason}，建议稍后再试`);
+            throw new Error(
+              `检测到风控限制: ${rateLimitCheck.reason}，建议稍后再试`
+            );
           }
         }
 
         // 提交提示词（增强容错性，避免重复提交）
         await submitPromptWithRetry(currentPrompts[i], 3, i);
-        
+
         // 等待生成完成（增强容错性，验证图片存在）
-        const verification = await waitForGenerationWithRetry(displayIndex, 3, i);
-        
+        const verification = await waitForGenerationWithRetry(
+          displayIndex,
+          3,
+          i
+        );
+
         if (verification && verification.exists) {
           // 再次确认图片完全加载完成（额外等待，确保稳定）
-          console.log(`[Content] 第 ${displayIndex} 张图片验证成功，等待图片稳定...`);
+          console.log(
+            `[Content] 第 ${displayIndex} 张图片验证成功，等待图片稳定...`
+          );
           await sleep(1000); // 额外等待 1 秒，确保图片完全渲染
-          
+
           // 最终验证：确保图片仍然存在且已加载
           const finalVerification = verifyImageExists(displayIndex);
           if (finalVerification.exists) {
@@ -248,57 +265,73 @@ async function startGeneration(startFrom = 0) {
               });
             }
 
-            console.log(`[Content] 第 ${displayIndex} 张图片生成成功并已完全加载`);
-            
+            console.log(
+              `[Content] 第 ${displayIndex} 张图片生成成功并已完全加载`
+            );
+
             // 更新进度为成功
             chrome.runtime.sendMessage({
               action: "updateProgress",
               current: displayIndex,
               total: currentPrompts.length,
-              status: "success"
+              status: "success",
             });
           } else {
-            throw new Error(`第 ${displayIndex} 张图片最终验证失败: ${finalVerification.reason}`);
+            throw new Error(
+              `第 ${displayIndex} 张图片最终验证失败: ${finalVerification.reason}`
+            );
           }
         } else {
           throw new Error(`第 ${displayIndex} 张图片验证失败`);
         }
       } catch (error) {
-        console.error(`[Content] 第 ${displayIndex} 张图片生成失败:`, error.message);
-        
+        console.error(
+          `[Content] 第 ${displayIndex} 张图片生成失败:`,
+          error.message
+        );
+
         // 更新进度为失败
         chrome.runtime.sendMessage({
           action: "updateProgress",
           current: displayIndex,
           total: currentPrompts.length,
           status: "error",
-          error: error.message
+          error: error.message,
         });
-        
+
         // 决定是否继续：如果是关键错误（如用户停止），则停止；否则继续下一张
-        if (error.message.includes('用户停止')) {
+        if (error.message.includes("用户停止")) {
           throw error; // 用户停止，抛出错误
         }
-        
+
         // 其他错误继续下一张
-        console.warn(`[Content] 第 ${displayIndex} 张图片生成失败，继续下一张...`);
+        console.warn(
+          `[Content] 第 ${displayIndex} 张图片生成失败，继续下一张...`
+        );
       }
-      
+
       if (generationSuccess) {
         // 成功生成后，随机等待15-25秒，模拟真实用户行为，避免触发Google反机器人检测
         const minWait = 15000; // 15秒
         const maxWait = 25000; // 25秒
-        const waitTime = Math.floor(Math.random() * (maxWait - minWait + 1)) + minWait;
-        console.log(`[Content] 第 ${displayIndex} 张生成完成，等待 ${waitTime/1000} 秒（模拟真实用户行为）...`);
+        const waitTime =
+          Math.floor(Math.random() * (maxWait - minWait + 1)) + minWait;
+        console.log(
+          `[Content] 第 ${displayIndex} 张生成完成，等待 ${
+            waitTime / 1000
+          } 秒（模拟真实用户行为）...`
+        );
         await sleep(waitTime);
       } else {
         await sleep(5000); // 失败后等待5秒，避免连续失败
       }
     }
-    
+
     // 记录成功生成的图片数量
-    console.log(`[Content] 生成完成：成功 ${successfullyGenerated.length}/${currentPrompts.length} 张`);
-    
+    console.log(
+      `[Content] 生成完成：成功 ${successfullyGenerated.length}/${currentPrompts.length} 张`
+    );
+
     // 如果所有图片都生成失败，抛出错误
     if (successfullyGenerated.length === 0 && currentPrompts.length > 0) {
       throw new Error("所有图片生成失败，请检查提示词或网络连接");
@@ -314,23 +347,23 @@ async function startGeneration(startFrom = 0) {
         action: "generationComplete",
         total: currentPrompts.length,
       });
-      
+
       chrome.runtime.sendMessage({
-        action: "taskComplete"
+        action: "taskComplete",
       });
     }
   } catch (error) {
     console.error("[Content] 任务错误:", error);
-    
+
     // 通知错误
     chrome.runtime.sendMessage({
       action: "generationError",
       error: error.message || String(error),
     });
-    
+
     chrome.runtime.sendMessage({
       action: "taskError",
-      error: error.message || String(error)
+      error: error.message || String(error),
     });
   } finally {
     isGenerating = false;
@@ -346,27 +379,31 @@ function clearSubmissionRecords() {
   const keysToRemove = [];
   for (let i = 0; i < sessionStorage.length; i++) {
     const key = sessionStorage.key(i);
-    if (key && key.startsWith('prompt_') && key.endsWith('_submitted')) {
+    if (key && key.startsWith("prompt_") && key.endsWith("_submitted")) {
       keysToRemove.push(key);
     }
   }
-  keysToRemove.forEach(key => sessionStorage.removeItem(key));
+  keysToRemove.forEach((key) => sessionStorage.removeItem(key));
   console.log(`[Content] 已清理 ${keysToRemove.length} 条提交记录`);
 }
 
 // 提交提示词（带重试机制，但避免重复提交）
-async function submitPromptWithRetry(prompt, maxRetries = 3, promptIndex = null) {
+async function submitPromptWithRetry(
+  prompt,
+  maxRetries = 3,
+  promptIndex = null
+) {
   // 检查是否已经提交过这个提示词（避免重复提交）
   const promptKey = `prompt_${promptIndex}_submitted`;
   const wasSubmitted = sessionStorage.getItem(promptKey);
-  
+
   if (wasSubmitted) {
     console.log(`[Content] 提示词 ${promptIndex + 1} 已提交过，跳过重复提交`);
     // 等待一下，确保之前的提交已处理
     await sleep(2000);
     return;
   }
-  
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // 传递 displayIndex 给 submitPrompt，用于动态调整等待时间
@@ -374,11 +411,14 @@ async function submitPromptWithRetry(prompt, maxRetries = 3, promptIndex = null)
       await submitPrompt(prompt, displayIndex);
       // 标记已提交
       if (promptIndex !== null) {
-        sessionStorage.setItem(promptKey, 'true');
+        sessionStorage.setItem(promptKey, "true");
       }
       return; // 成功
     } catch (error) {
-      console.warn(`[Content] 提交提示词失败 (尝试 ${attempt}/${maxRetries}):`, error);
+      console.warn(
+        `[Content] 提交提示词失败 (尝试 ${attempt}/${maxRetries}):`,
+        error
+      );
       if (attempt === maxRetries) {
         throw new Error(`提交提示词失败: ${error.message}`);
       }
@@ -391,27 +431,37 @@ async function submitPromptWithRetry(prompt, maxRetries = 3, promptIndex = null)
 async function submitPrompt(prompt, currentDisplayIndex = null) {
   // 容错查询：等待输入框出现（减少查询次数，避免触发检测）
   let input = null;
-  for (let i = 0; i < 5; i++) { // 减少查询次数：从10次改为5次
-    input = document.querySelector('div[contenteditable="true"][role="textbox"]');
+  for (let i = 0; i < 5; i++) {
+    // 减少查询次数：从10次改为5次
+    input = document.querySelector(
+      'div[contenteditable="true"][role="textbox"]'
+    );
     if (input) break;
     await sleep(500);
   }
-  
+
   if (!input) {
     // 尝试进入 Create Image 模式
     await ensureCreateImageMode();
     await sleep(1000);
-    input = document.querySelector('div[contenteditable="true"][role="textbox"]');
+    input = document.querySelector(
+      'div[contenteditable="true"][role="textbox"]'
+    );
   }
-  
+
   if (!input) throw new Error("找不到输入框");
 
   // 简化输入框检查（减少DOM查询）
   // 只检查一次，如果不可用就等待一下
-  if (!input.hasAttribute('contenteditable') || input.getAttribute('contenteditable') !== 'true') {
+  if (
+    !input.hasAttribute("contenteditable") ||
+    input.getAttribute("contenteditable") !== "true"
+  ) {
     await sleep(1000);
     // 重新获取输入框
-    input = document.querySelector('div[contenteditable="true"][role="textbox"]');
+    input = document.querySelector(
+      'div[contenteditable="true"][role="textbox"]'
+    );
     if (!input) throw new Error("输入框不可用");
   }
 
@@ -421,10 +471,11 @@ async function submitPrompt(prompt, currentDisplayIndex = null) {
   await sleep(600); // 稍微减少等待时间
 
   // 简化按钮查找（减少DOM查询）
-  const sendBtn = document.querySelector('button[data-testid="send-button"]') ||
-                  Array.from(document.querySelectorAll("button")).find(
-                    (b) => !b.disabled && b.getAttribute("aria-label") === "Send"
-                  );
+  const sendBtn =
+    document.querySelector('button[data-testid="send-button"]') ||
+    Array.from(document.querySelectorAll("button")).find(
+      (b) => !b.disabled && b.getAttribute("aria-label") === "Send"
+    );
 
   if (sendBtn && !sendBtn.disabled) {
     sendBtn.click();
@@ -448,25 +499,31 @@ async function clickRefreshButton() {
   // 1. 包含 refresh-icon 类的按钮
   // 2. aria-label 包含 refresh 或 刷新 的按钮
   // 3. 圆形刷新图标（Material Design）
-  
+
   const refreshSelectors = [
     'button[class*="refresh"]',
     'button[aria-label*="refresh" i]',
     'button[aria-label*="刷新" i]',
     'button[aria-label*="retry" i]',
     'button[aria-label*="重试" i]',
-    '.refresh-icon',
+    ".refresh-icon",
     'button[class*="refresh-icon"]',
     // Material Design 图标
-    'button mat-icon.refresh-icon',
-    'button .mat-icon.refresh-icon'
+    "button mat-icon.refresh-icon",
+    "button .mat-icon.refresh-icon",
   ];
-  
+
   for (const selector of refreshSelectors) {
     try {
       const refreshBtn = document.querySelector(selector);
-      if (refreshBtn && !refreshBtn.disabled && refreshBtn.offsetParent !== null) {
-        console.log(`[Content] 找到刷新按钮，点击刷新... (选择器: ${selector})`);
+      if (
+        refreshBtn &&
+        !refreshBtn.disabled &&
+        refreshBtn.offsetParent !== null
+      ) {
+        console.log(
+          `[Content] 找到刷新按钮，点击刷新... (选择器: ${selector})`
+        );
         refreshBtn.click();
         await sleep(500); // 点击后等待一下
         return true;
@@ -476,13 +533,15 @@ async function clickRefreshButton() {
       continue;
     }
   }
-  
+
   // 如果标准选择器找不到，尝试查找所有按钮，检查图标
   try {
-    const allButtons = Array.from(document.querySelectorAll('button'));
+    const allButtons = Array.from(document.querySelectorAll("button"));
     for (const btn of allButtons) {
       // 检查按钮是否包含刷新图标
-      const icon = btn.querySelector('mat-icon.refresh-icon, .refresh-icon, [class*="refresh"]');
+      const icon = btn.querySelector(
+        'mat-icon.refresh-icon, .refresh-icon, [class*="refresh"]'
+      );
       if (icon && !btn.disabled && btn.offsetParent !== null) {
         // 检查按钮是否在可见区域（通常在消息底部）
         const rect = btn.getBoundingClientRect();
@@ -497,7 +556,7 @@ async function clickRefreshButton() {
   } catch (error) {
     console.warn(`[Content] 查找刷新按钮时出错:`, error);
   }
-  
+
   console.log(`[Content] 未找到刷新按钮`);
   return false;
 }
@@ -508,9 +567,13 @@ function quickCheckImageExists(targetCount) {
 }
 
 // 等待生成完成（带重试机制，但不重复提交提示词）
-async function waitForGenerationWithRetry(targetCount, maxRetries = 3, promptIndex = null) {
+async function waitForGenerationWithRetry(
+  targetCount,
+  maxRetries = 3,
+  promptIndex = null
+) {
   let lastError = null;
-  
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const verification = await waitForGeneration(targetCount);
@@ -522,24 +585,32 @@ async function waitForGenerationWithRetry(targetCount, maxRetries = 3, promptInd
       }
     } catch (error) {
       lastError = error;
-      console.warn(`[Content] 等待生成失败 (尝试 ${attempt}/${maxRetries}):`, error.message);
-      
+      console.warn(
+        `[Content] 等待生成失败 (尝试 ${attempt}/${maxRetries}):`,
+        error.message
+      );
+
       // 检查是否是用户停止
-      if (error.message.includes('用户停止')) {
+      if (error.message.includes("用户停止")) {
         throw error; // 用户停止，不重试
       }
-      
+
       // 检查是否是明确的错误消息（如"系统原因"）
       // 注意：刷新按钮只在"提示词已提交，但检测到错误消息"时使用
-      if (error.message.includes('错误消息') || error.message.includes('无法生成')) {
+      if (
+        error.message.includes("错误消息") ||
+        error.message.includes("无法生成")
+      ) {
         // 如果是第一次或第二次尝试，优先点击刷新按钮
         if (attempt <= 2) {
-          console.log(`[Content] 提示词已提交，但检测到错误消息，优先尝试点击刷新按钮（避免重复提交提示词）...`);
+          console.log(
+            `[Content] 提示词已提交，但检测到错误消息，优先尝试点击刷新按钮（避免重复提交提示词）...`
+          );
           const refreshClicked = await clickRefreshButton();
           if (refreshClicked) {
             console.log(`[Content] ✅ 已点击刷新按钮，等待 8 秒后检查...`);
             await sleep(8000); // 等待8秒
-            
+
             // 检查是否生成成功
             const quickCheck = quickCheckImageExists(targetCount);
             if (quickCheck.exists) {
@@ -553,7 +624,7 @@ async function waitForGenerationWithRetry(targetCount, maxRetries = 3, promptInd
             continue; // 继续重试
           }
         }
-        
+
         // 如果是最后一次尝试，抛出错误
         if (attempt === maxRetries) {
           throw new Error(`生成第 ${targetCount} 张图片失败: ${error.message}`);
@@ -561,7 +632,7 @@ async function waitForGenerationWithRetry(targetCount, maxRetries = 3, promptInd
         // 否则等待后重试（不重新提交提示词，只等待）
         console.log(`[Content] 检测到错误，等待 ${3 * attempt} 秒后重试...`);
         await sleep(3000 * attempt);
-        
+
         // 重试前先快速检查一次，可能图片已经生成了
         const quickCheck = quickCheckImageExists(targetCount);
         if (quickCheck.exists) {
@@ -571,18 +642,20 @@ async function waitForGenerationWithRetry(targetCount, maxRetries = 3, promptInd
         }
         continue;
       }
-      
+
       // 超时错误：优先点击刷新按钮（更接近真实用户行为，避免重复提交）
       // 注意：刷新按钮只在"提示词已提交，但等待生成超时"时使用
-      if (error.message.includes('超时')) {
+      if (error.message.includes("超时")) {
         // 第一次或第二次超时，优先尝试点击刷新按钮
         if (attempt <= 2) {
-          console.log(`[Content] ⏱️ 提示词已提交，但等待 ${targetCount} 秒后未检测到图片，优先尝试点击刷新按钮（避免重复提交提示词）...`);
+          console.log(
+            `[Content] ⏱️ 提示词已提交，但等待 ${targetCount} 秒后未检测到图片，优先尝试点击刷新按钮（避免重复提交提示词）...`
+          );
           const refreshClicked = await clickRefreshButton();
           if (refreshClicked) {
             console.log(`[Content] ✅ 已点击刷新按钮，等待 10 秒后检查...`);
             await sleep(10000); // 等待10秒，给Gemini时间重新生成
-            
+
             // 检查是否生成成功
             const quickCheck = quickCheckImageExists(targetCount);
             if (quickCheck.exists) {
@@ -598,12 +671,12 @@ async function waitForGenerationWithRetry(targetCount, maxRetries = 3, promptInd
             console.log(`[Content] ⚠️ 未找到刷新按钮，将使用等待重试策略`);
           }
         }
-        
+
         // 如果刷新失败或已经是最后一次尝试，等待后重试
         if (attempt < maxRetries) {
           console.log(`[Content] 超时，等待 ${5 * attempt} 秒后重试...`);
           await sleep(5000 * attempt);
-          
+
           // 重试前先快速检查一次，可能图片已经生成了
           const quickCheck = quickCheckImageExists(targetCount);
           if (quickCheck.exists) {
@@ -616,7 +689,7 @@ async function waitForGenerationWithRetry(targetCount, maxRetries = 3, promptInd
       }
     }
   }
-  
+
   // 所有重试都失败，最后再检查一次
   const finalCheck = quickCheckImageExists(targetCount);
   if (finalCheck.exists) {
@@ -624,44 +697,49 @@ async function waitForGenerationWithRetry(targetCount, maxRetries = 3, promptInd
     await ensureImagesFullyLoaded(finalCheck.images);
     return finalCheck;
   }
-  
+
   // 所有重试都失败
-  throw lastError || new Error(`生成第 ${targetCount} 张图片失败: 重试 ${maxRetries} 次后仍失败`);
+  throw (
+    lastError ||
+    new Error(`生成第 ${targetCount} 张图片失败: 重试 ${maxRetries} 次后仍失败`)
+  );
 }
 
 // 确保图片完全加载完成（连续检查，确保稳定性）
 async function ensureImagesFullyLoaded(images, maxChecks = 5) {
   for (let check = 0; check < maxChecks; check++) {
     let allLoaded = true;
-    
+
     for (const img of images) {
       // 检查图片是否真正加载完成
       if (!img.complete || img.naturalWidth === 0 || img.naturalHeight === 0) {
         allLoaded = false;
         break;
       }
-      
+
       // 检查图片是否有有效的 src
-      if (!img.src || img.src === '' || img.src.startsWith('data:image/svg')) {
+      if (!img.src || img.src === "" || img.src.startsWith("data:image/svg")) {
         allLoaded = false;
         break;
       }
     }
-    
+
     if (allLoaded) {
       // 连续 2 次检查都通过，认为图片已稳定加载
       if (check >= 1) {
-        console.log(`[Content] 图片加载完成确认 (连续 ${check + 1} 次检查通过)`);
+        console.log(
+          `[Content] 图片加载完成确认 (连续 ${check + 1} 次检查通过)`
+        );
         return true;
       }
     } else {
       // 如果检查失败，重置计数器
       check = -1;
     }
-    
+
     await sleep(500);
   }
-  
+
   // 如果多次检查都失败，记录警告但继续
   console.warn(`[Content] 图片加载检查：部分图片可能未完全加载，但继续流程`);
   return false;
@@ -670,25 +748,29 @@ async function ensureImagesFullyLoaded(images, maxChecks = 5) {
 // 检测是否被Google风控/限制
 function detectRateLimitOrBlock() {
   // 1. 检查是否跳转到Google的"sorry"页面
-  if (window.location.href.includes('google.com/sorry') || 
-      window.location.href.includes('accounts.google.com/signin')) {
+  if (
+    window.location.href.includes("google.com/sorry") ||
+    window.location.href.includes("accounts.google.com/signin")
+  ) {
     return {
       blocked: true,
-      reason: '检测到Google验证页面，可能触发了反机器人检测',
-      type: 'sorry_page'
+      reason: "检测到Google验证页面，可能触发了反机器人检测",
+      type: "sorry_page",
     };
   }
 
   // 2. 检查页面标题是否包含"sorry"或"验证"
   const pageTitle = document.title.toLowerCase();
-  if (pageTitle.includes('sorry') || 
-      pageTitle.includes('verify') || 
-      pageTitle.includes('验证') ||
-      pageTitle.includes('unusual traffic')) {
+  if (
+    pageTitle.includes("sorry") ||
+    pageTitle.includes("verify") ||
+    pageTitle.includes("验证") ||
+    pageTitle.includes("unusual traffic")
+  ) {
     return {
       blocked: true,
-      reason: '页面标题显示可能被限制',
-      type: 'title_detection'
+      reason: "页面标题显示可能被限制",
+      type: "title_detection",
     };
   }
 
@@ -699,40 +781,50 @@ function detectRateLimitOrBlock() {
   if (captchaElements.length > 0) {
     return {
       blocked: true,
-      reason: '检测到验证码元素，可能被要求验证',
-      type: 'captcha'
+      reason: "检测到验证码元素，可能被要求验证",
+      type: "captcha",
     };
   }
 
   // 4. 检查输入框是否被禁用（可能是临时限制）
-  const input = document.querySelector('div[contenteditable="true"][role="textbox"]');
+  const input = document.querySelector(
+    'div[contenteditable="true"][role="textbox"]'
+  );
   if (input) {
-    const isDisabled = input.hasAttribute('disabled') || 
-                      input.getAttribute('contenteditable') === 'false' ||
-                      input.closest('[disabled]');
-    
+    const isDisabled =
+      input.hasAttribute("disabled") ||
+      input.getAttribute("contenteditable") === "false" ||
+      input.closest("[disabled]");
+
     // 检查是否有"暂时无法使用"等提示
-    const parentText = (input.closest('[class*="input"], [class*="textbox"]')?.innerText || '').toLowerCase();
-    if (isDisabled && (parentText.includes('暂时') || parentText.includes('unavailable'))) {
+    const parentText = (
+      input.closest('[class*="input"], [class*="textbox"]')?.innerText || ""
+    ).toLowerCase();
+    if (
+      isDisabled &&
+      (parentText.includes("暂时") || parentText.includes("unavailable"))
+    ) {
       return {
         blocked: true,
-        reason: '输入框被禁用，可能被临时限制',
-        type: 'input_disabled'
+        reason: "输入框被禁用，可能被临时限制",
+        type: "input_disabled",
       };
     }
   }
 
   // 5. 检查是否有"访问被拒绝"或"请求过多"的提示
   const bodyText = document.body.innerText.toLowerCase();
-  if (bodyText.includes('too many requests') ||
-      bodyText.includes('rate limit') ||
-      bodyText.includes('请求过多') ||
-      bodyText.includes('访问被拒绝') ||
-      bodyText.includes('access denied')) {
+  if (
+    bodyText.includes("too many requests") ||
+    bodyText.includes("rate limit") ||
+    bodyText.includes("请求过多") ||
+    bodyText.includes("访问被拒绝") ||
+    bodyText.includes("access denied")
+  ) {
     return {
       blocked: true,
-      reason: '检测到速率限制或访问拒绝提示',
-      type: 'rate_limit_message'
+      reason: "检测到速率限制或访问拒绝提示",
+      type: "rate_limit_message",
     };
   }
 
@@ -744,58 +836,70 @@ function detectRateLimitOrBlock() {
 function detectErrorMessage() {
   // 检查页面文本中是否包含错误关键词
   const errorKeywords = [
-    '无法生成',
-    '系统原因',
-    '生成失败',
-    '连接暂时中断', // 新增：检测中断消息
-    '生图工具连接暂时中断', // 新增：检测中断消息
-    'I can\'t generate',
-    'I\'m unable to',
-    'Sorry, I can\'t',
-    'unable to generate',
-    'cannot generate'
+    "无法生成",
+    "系统原因",
+    "生成失败",
+    "连接暂时中断", // 新增：检测中断消息
+    "生图工具连接暂时中断", // 新增：检测中断消息
+    "I can't generate",
+    "I'm unable to",
+    "Sorry, I can't",
+    "unable to generate",
+    "cannot generate",
   ];
-  
+
   // 排除的关键词（这些不是错误）
   const excludeKeywords = [
-    '设计草图', // 排除设计草图提示
-    'MJ 提示词', // 排除MJ提示词
-    'Midjourney', // 排除Midjourney相关
-    'visual design sketch' // 排除设计草图英文
+    "设计草图", // 排除设计草图提示
+    "MJ 提示词", // 排除MJ提示词
+    "Midjourney", // 排除Midjourney相关
+    "visual design sketch", // 排除设计草图英文
   ];
-  
+
   // 查找所有对话消息容器（按时间倒序，最新的在前）
-  const messageContainers = Array.from(document.querySelectorAll(
-    '[class*="message"], [class*="response"], [class*="chat-message"]'
-  )).reverse(); // 反转，最新的在前
-  
+  const messageContainers = Array.from(
+    document.querySelectorAll(
+      '[class*="message"], [class*="response"], [class*="chat-message"]'
+    )
+  ).reverse(); // 反转，最新的在前
+
   // 只检查最新的3条消息（避免检查太多旧消息）
   for (const container of messageContainers.slice(0, 3)) {
-    const containerText = (container.innerText || container.textContent || '').toLowerCase();
-    
+    const containerText = (
+      container.innerText ||
+      container.textContent ||
+      ""
+    ).toLowerCase();
+
     // 如果包含排除关键词，跳过
-    if (excludeKeywords.some(exclude => containerText.includes(exclude.toLowerCase()))) {
+    if (
+      excludeKeywords.some((exclude) =>
+        containerText.includes(exclude.toLowerCase())
+      )
+    ) {
       continue;
     }
-    
+
     // 检查是否包含错误关键词
     for (const keyword of errorKeywords) {
       if (containerText.includes(keyword.toLowerCase())) {
         // 确认是错误消息（不是设计草图提示）
-        const fullText = container.innerText || container.textContent || '';
+        const fullText = container.innerText || container.textContent || "";
         // 如果同时包含"设计草图"和错误关键词，可能是设计草图提示，不是错误
-        if (fullText.toLowerCase().includes('设计草图') && 
-            !fullText.toLowerCase().includes('连接暂时中断') &&
-            !fullText.toLowerCase().includes('无法生成')) {
+        if (
+          fullText.toLowerCase().includes("设计草图") &&
+          !fullText.toLowerCase().includes("连接暂时中断") &&
+          !fullText.toLowerCase().includes("无法生成")
+        ) {
           continue; // 跳过设计草图提示
         }
-        
+
         // 返回错误消息（限制长度）
         return fullText.trim().substring(0, 200);
       }
     }
   }
-  
+
   return null;
 }
 
@@ -805,17 +909,20 @@ function verifyImageExists(targetCount) {
   let downloadBtns = document.querySelectorAll(
     'button[aria-label*="Download full size"]'
   );
-  
+
   if (downloadBtns.length === 0) {
     downloadBtns = document.querySelectorAll(
       'button[data-test-id="download-generated-image-button"]'
     );
   }
-  
+
   if (downloadBtns.length < targetCount) {
-    return { exists: false, reason: `下载按钮数量不足 (${downloadBtns.length} < ${targetCount})` };
+    return {
+      exists: false,
+      reason: `下载按钮数量不足 (${downloadBtns.length} < ${targetCount})`,
+    };
   }
-  
+
   // 2. 检查对应的图片元素是否存在
   const allImages = Array.from(document.querySelectorAll("img"));
   const validImages = allImages.filter((img) => {
@@ -825,11 +932,14 @@ function verifyImageExists(targetCount) {
     if (src.includes("profile_photo")) return false;
     return img.naturalWidth > 200;
   });
-  
+
   if (validImages.length < targetCount) {
-    return { exists: false, reason: `有效图片数量不足 (${validImages.length} < ${targetCount})` };
+    return {
+      exists: false,
+      reason: `有效图片数量不足 (${validImages.length} < ${targetCount})`,
+    };
   }
-  
+
   // 3. 检查最近的图片是否加载完成
   const recentImages = validImages.slice(-targetCount);
   for (let i = 0; i < recentImages.length; i++) {
@@ -838,13 +948,16 @@ function verifyImageExists(targetCount) {
       return { exists: false, reason: `第 ${i + 1} 张图片未加载完成` };
     }
   }
-  
+
   // 4. 检查是否有错误消息
   const errorMsg = detectErrorMessage();
   if (errorMsg) {
-    return { exists: false, reason: `检测到错误消息: ${errorMsg.substring(0, 100)}` };
+    return {
+      exists: false,
+      reason: `检测到错误消息: ${errorMsg.substring(0, 100)}`,
+    };
   }
-  
+
   return { exists: true, images: recentImages, downloadBtns: downloadBtns };
 }
 
@@ -853,7 +966,7 @@ async function waitForGeneration(targetCount, timeoutSeconds = 180) {
   let attempts = 0;
   let lastErrorReason = null;
   const maxAttempts = timeoutSeconds; // 每 2 秒检查一次（减少检测频率，避免触发反机器人检测）
-  
+
   while (attempts < maxAttempts) {
     if (shouldStop) throw new Error("用户停止");
 
@@ -861,19 +974,23 @@ async function waitForGeneration(targetCount, timeoutSeconds = 180) {
     if (attempts % 5 === 0) {
       const rateLimitCheck = detectRateLimitOrBlock();
       if (rateLimitCheck.blocked) {
-        console.warn(`[Content] ⚠️ 等待生成时检测到风控: ${rateLimitCheck.reason}`);
-        throw new Error(`检测到风控限制: ${rateLimitCheck.reason}，建议稍后再试`);
+        console.warn(
+          `[Content] ⚠️ 等待生成时检测到风控: ${rateLimitCheck.reason}`
+        );
+        throw new Error(
+          `检测到风控限制: ${rateLimitCheck.reason}，建议稍后再试`
+        );
       }
     }
 
     // 验证图片是否存在
     const verification = verifyImageExists(targetCount);
-    
+
     if (verification.exists) {
       console.log(
         `[Page ${targetCount}] 生成确认 (检测到 ${verification.downloadBtns.length} 个下载按钮, ${verification.images.length} 张有效图片)`
       );
-      
+
       // 确保图片真正加载完成
       const allLoaded = await ensureImagesFullyLoaded(verification.images, 2);
       if (allLoaded) {
@@ -885,14 +1002,18 @@ async function waitForGeneration(targetCount, timeoutSeconds = 180) {
     } else {
       lastErrorReason = verification.reason;
       // 只在明确检测到错误时才抛出
-      if (verification.reason && 
-          (verification.reason.includes('连接暂时中断') || 
-           verification.reason.includes('无法生成') ||
-           verification.reason.includes('生成失败'))) {
+      if (
+        verification.reason &&
+        (verification.reason.includes("连接暂时中断") ||
+          verification.reason.includes("无法生成") ||
+          verification.reason.includes("生成失败"))
+      ) {
         // 再次确认是最新的错误消息
         const latestError = detectErrorMessage();
-        if (latestError && !latestError.includes('设计草图')) {
-          throw new Error(`生成第 ${targetCount} 张图片失败: ${verification.reason}`);
+        if (latestError && !latestError.includes("设计草图")) {
+          throw new Error(
+            `生成第 ${targetCount} 张图片失败: ${verification.reason}`
+          );
         }
       }
     }
@@ -902,7 +1023,11 @@ async function waitForGeneration(targetCount, timeoutSeconds = 180) {
     attempts++;
   }
 
-  throw new Error(`生成第 ${targetCount} 张图片超时: ${lastErrorReason || '未检测到图片或下载按钮'}`);
+  throw new Error(
+    `生成第 ${targetCount} 张图片超时: ${
+      lastErrorReason || "未检测到图片或下载按钮"
+    }`
+  );
 }
 
 // 判断是否为可下载的位图格式（PNG/JPEG）
@@ -913,7 +1038,8 @@ function isRasterImageUrl(src) {
   if (lower.endsWith(".svg")) return false;
   if (lower.includes("image/svg")) return false;
   if (lower.startsWith("data:image/png")) return true;
-  if (lower.startsWith("data:image/jpeg") || lower.startsWith("data:image/jpg")) return true;
+  if (lower.startsWith("data:image/jpeg") || lower.startsWith("data:image/jpg"))
+    return true;
   if (lower.includes(".png")) return true;
   if (lower.includes(".jpg") || lower.includes(".jpeg")) return true;
   if (lower.includes("googleusercontent.com")) return true; // 可升级为 =s0 PNG
@@ -947,17 +1073,15 @@ function buildFullSizeCandidates(src) {
       return [src];
     }
 
-    // 统一路径到 rd-gg-dl（与“Download full size”按钮一致）
-    let pathname = url.pathname
-      .replace("/gg/", "/rd-gg-dl/")
-      .replace("/rd-gg/", "/rd-gg-dl/");
+    // 核心修复：统一路径为 /rd-gg/（日志显示 rd-gg-dl 会返回元数据/HTML）
+    let pathname = url.pathname.replace(/\/gg\/|\/rd-gg-dl\/|\/rd-gg\//, "/rd-gg/");
 
-    // 去掉已有的 =sXX 或 =wXX 或 =no 等尺寸标记
+    // 去掉已有的尺寸参数
     pathname = pathname.replace(/=s\d[^/]*$/i, "");
     pathname = pathname.replace(/=w\d[^/]*$/i, "");
     pathname = pathname.replace(/=no[^/]*$/i, "");
 
-    // 确保 alr=yes 保留（保持和手动下载一致）
+    // 保证 alr=yes
     if (!url.searchParams.has("alr")) {
       url.searchParams.set("alr", "yes");
     }
@@ -966,10 +1090,9 @@ function buildFullSizeCandidates(src) {
     const base = `${url.origin}${pathname}`;
 
     return [
-      `${base}=s0-d-I${suffix}`, // 优先与手动按钮一致
-      `${base}=s0-d${suffix}`,
-      `${base}=s0${suffix}`,
-      src, // 最后兜底保持原链接
+      `${base}=s0-d-I${suffix}`, // 优先与手动全尺寸一致
+      `${base}=s0${suffix}`,     // 备选高清
+      src                        // 兜底原始
     ];
   } catch (e) {
     return [src];
@@ -1007,19 +1130,24 @@ async function downloadAllGeneratedImages(expectedCount = null) {
       console.warn("[Batch] 未找到任何有效图片");
       chrome.runtime.sendMessage({
         action: "generationError",
-        error: "未找到任何生成的图片，请检查生成是否成功"
+        error: "未找到任何生成的图片，请检查生成是否成功",
       });
       return;
     }
 
-    const count = expectedCount !== null ? expectedCount : (currentPrompts.length || validImages.length);
+    const count =
+      expectedCount !== null
+        ? expectedCount
+        : currentPrompts.length || validImages.length;
     const targetImages = validImages.slice(-count);
     candidates = targetImages.map((img, idx) => ({
       index: idx + 1,
       src: img.src,
     }));
     if (candidates.length < count) {
-      console.warn(`[Batch] 警告：期望 ${count} 张图片，但只找到 ${candidates.length} 张`);
+      console.warn(
+        `[Batch] 警告：期望 ${count} 张图片，但只找到 ${candidates.length} 张`
+      );
     }
     console.log(
       `[Batch] 找到 ${validImages.length} 张图（DOM回退），准备下载最后 ${candidates.length} 张`
@@ -1053,13 +1181,9 @@ async function downloadAllGeneratedImages(expectedCount = null) {
   for (let i = 0; i < candidates.length; i++) {
     const pageNum = i + 1; // 文件名序号，严格递增
     const src = candidates[i].src;
-    let finalUrl = src;
-
-    // 优先尝试“Download full size”直链模式
     const candidatesUrls = buildFullSizeCandidates(src);
-    finalUrl = candidatesUrls[0] || src;
     console.log(
-      `[Batch] Page ${pageNum}: 使用优先全尺寸链接 ${finalUrl} （候选 ${candidatesUrls.length} 个）`
+      `[Batch] Page ${pageNum}: 全尺寸候选 ${candidatesUrls.length} 个，依次尝试`
     );
 
     // 强制使用 .png 扩展
@@ -1067,7 +1191,28 @@ async function downloadAllGeneratedImages(expectedCount = null) {
       ? `${saveDirectory}/page${pageNum}.png`
       : `page${pageNum}.png`;
 
-    await fetchAndDownloadWithAuth(finalUrl, filename, pageNum);
+    let success = false;
+    for (let k = 0; k < candidatesUrls.length; k++) {
+      const url = candidatesUrls[k];
+      try {
+        await fetchAndDownloadWithAuth(url, filename, pageNum);
+        success = true;
+        break;
+      } catch (err) {
+        console.error(
+          `[Batch] Page ${pageNum} 候选 ${k + 1}/${candidatesUrls.length} 失败: ${err?.message || err}`
+        );
+        // 尝试下一个候选
+      }
+    }
+
+    if (!success) {
+      // 全部候选失败，最后兜底用原始 src 直链（可能是小图）
+      console.warn(
+        `[Batch] Page ${pageNum} 所有高清候选失败，兜底原始链接`
+      );
+      await fetchAndDownloadWithAuth(src, filename, pageNum, { skipTypeCheck: true, skipSizeCheck: true });
+    }
 
     await sleep(800);
 
@@ -1089,7 +1234,8 @@ async function downloadAllGeneratedImages(expectedCount = null) {
 }
 
 // 使用带凭证的 fetch 获取图片并下载（解决 rd-gg-dl 需身份校验导致的 pageX.html 问题）
-async function fetchAndDownloadWithAuth(url, filename, pageNum) {
+async function fetchAndDownloadWithAuth(url, filename, pageNum, options = {}) {
+  const { skipTypeCheck = false, skipSizeCheck = false } = options;
   try {
     const res = await fetch(url, {
       method: "GET",
@@ -1103,11 +1249,16 @@ async function fetchAndDownloadWithAuth(url, filename, pageNum) {
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     }
-    const blob = await res.blob();
-    // 简单校验返回内容类型，防止 html 报错页
-    if (!blob.type.startsWith("image/")) {
-      throw new Error(`Unexpected content-type: ${blob.type || "unknown"}`);
+    const contentType = res.headers.get("content-type") || "";
+    if (!skipTypeCheck && !contentType.startsWith("image/")) {
+      throw new Error(`Invalid content-type: ${contentType || "unknown"}`);
     }
+
+    const blob = await res.blob();
+    if (!skipSizeCheck && blob.size < 2000) {
+      throw new Error(`Image too small (${blob.size} bytes), likely error response`);
+    }
+
     const objectUrl = URL.createObjectURL(blob);
 
     await new Promise((resolve) => {
@@ -1119,7 +1270,9 @@ async function fetchAndDownloadWithAuth(url, filename, pageNum) {
         },
         (res) => {
           if (res && res.success) {
-            console.log(`[Batch] Page ${pageNum} 已通过 fetch+blob 发送下载`);
+            console.log(
+              `[Batch] Page ${pageNum} 已通过 fetch+blob 发送下载 (size ${(blob.size / 1024 / 1024).toFixed(2)} MB)`
+            );
           } else {
             console.error(`[Batch] Page ${pageNum} 下载失败`, res && res.error);
           }
@@ -1142,6 +1295,7 @@ async function fetchAndDownloadWithAuth(url, filename, pageNum) {
         () => resolve()
       );
     });
+    throw err; // 将错误抛出给上层以尝试下一候选
   }
 }
 
@@ -1152,8 +1306,3 @@ function sleep(ms) {
 if (window.location.href.includes("gemini.google.com")) {
   console.log("Gemini Auto PPT Generator: Ready (Page Context Mode)");
 }
-
-
-
-
-
