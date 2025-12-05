@@ -1,119 +1,181 @@
-// Background service worker
+// background.js - 任务状态持久化版本
 
-// Download queue to store filename info before download starts
-const downloadQueue = [];
-// Map to track active downloads: downloadId -> { tabId, filename, pageNumber }
-const activeDownloads = new Map();
+// 任务状态存储（持久化到 chrome.storage）
+let taskState = {
+  isGenerating: false,
+  currentIndex: 0,
+  total: 0,
+  prompts: [],
+  saveDirectory: "",
+  tabId: null,
+  startTime: null,
+  lastUpdate: null
+};
 
-chrome.runtime.onInstalled.addListener(() => {
-    console.log('Gemini Auto PPT Generator installed');
+// 初始化：从存储恢复状态
+chrome.runtime.onInstalled.addListener(async () => {
+  console.log("Gemini Auto PPT Generator installed");
+  const saved = await chrome.storage.local.get(['taskState']);
+  if (saved.taskState) {
+    taskState = { ...taskState, ...saved.taskState };
+    console.log("[BG] 恢复任务状态:", taskState);
+  }
 });
 
-// Prepare download - add to queue
+// 监听标签页更新（检测刷新/导航）
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  // 如果任务正在运行且标签页被刷新
+  if (taskState.isGenerating && taskState.tabId === tabId && changeInfo.status === 'loading') {
+    console.log(`[BG] 检测到标签页 ${tabId} 正在刷新，任务状态保持`);
+    // 状态保持，等待 content script 恢复
+  }
+});
+
+// 监听标签页关闭
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  if (taskState.isGenerating && taskState.tabId === tabId) {
+    console.log(`[BG] 任务标签页 ${tabId} 已关闭，清理任务状态`);
+    await clearTaskState();
+  }
+});
+
+// 保存任务状态到存储
+async function saveTaskState() {
+  taskState.lastUpdate = Date.now();
+  await chrome.storage.local.set({ taskState });
+  console.log("[BG] 任务状态已保存:", taskState);
+}
+
+// 清理任务状态
+async function clearTaskState() {
+  taskState = {
+    isGenerating: false,
+    currentIndex: 0,
+    total: 0,
+    prompts: [],
+    saveDirectory: "",
+    tabId: null,
+    startTime: null,
+    lastUpdate: null
+  };
+  await chrome.storage.local.remove(['taskState']);
+  console.log("[BG] 任务状态已清理");
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'prepareDownload') {
-        const tabId = sender.tab?.id || null;
-        console.log('[BG] Preparing download:', message.filename);
-        console.log('[BG] Tab ID:', tabId);
-        downloadQueue.push({
-            filename: message.filename,
-            tabId: tabId,
-            pageNumber: message.pageNumber
-        });
-        console.log('[BG] Queue length:', downloadQueue.length);
-        sendResponse({ success: true });
-        return true;
+  // 下载功能
+  if (message.action === "downloadDirectly") {
+    console.log(`[BG] API Downloading: ${message.filename}`);
+
+    chrome.downloads.download(
+      {
+        url: message.url,
+        filename: message.filename,
+        conflictAction: "uniquify",
+        saveAs: false,
+      },
+      (downloadId) => {
+        if (chrome.runtime.lastError) {
+          console.error(`[BG] Error: ${chrome.runtime.lastError.message}`);
+          sendResponse({
+            success: false,
+            error: chrome.runtime.lastError.message,
+          });
+        } else {
+          console.log(`[BG] Started ID: ${downloadId}`);
+          sendResponse({ success: true, downloadId });
+        }
+      }
+    );
+    return true;
+  }
+
+  // 任务状态管理
+  if (message.action === "taskStart") {
+    taskState = {
+      isGenerating: true,
+      currentIndex: 0,
+      total: message.total || 0,
+      prompts: message.prompts || [],
+      saveDirectory: message.saveDirectory || "",
+      tabId: sender.tab?.id || null,
+      startTime: Date.now(),
+      lastUpdate: Date.now()
+    };
+    saveTaskState();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.action === "taskUpdate") {
+    if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
+      // currentIndex 应该是 displayIndex（1-based），确保进度正确
+      taskState.currentIndex = message.currentIndex || taskState.currentIndex;
+      taskState.lastUpdate = Date.now();
+      saveTaskState();
+      sendResponse({ success: true });
+    } else {
+      sendResponse({ success: false, error: "任务状态不匹配" });
     }
     return true;
-});
+  }
 
-// Intercept downloads and rename them
-chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
-    console.log('[BG] onDeterminingFilename triggered');
-    console.log('[BG] Download URL:', downloadItem.url);
-    console.log('[BG] Queue length:', downloadQueue.length);
-
-    // Only process blob URLs (from Gemini image downloads)
-    if (downloadItem.url.startsWith('blob:') && downloadQueue.length > 0) {
-        const downloadInfo = downloadQueue.shift();
-        console.log('[BG] Renaming download to:', downloadInfo.filename);
-        
-        // Suggest custom filename with path
-        suggest({
-            filename: downloadInfo.filename,
-            conflictAction: 'uniquify'
-        });
-
-        // Store download info for tracking
-        activeDownloads.set(downloadItem.id, {
-            tabId: downloadInfo.tabId,
-            filename: downloadInfo.filename,
-            pageNumber: downloadInfo.pageNumber
-        });
-
-        // Notify content script that download started
-        if (downloadInfo.tabId) {
-            console.log('[BG] Download started, ID:', downloadItem.id, 'for tab:', downloadInfo.tabId);
-            chrome.tabs.sendMessage(downloadInfo.tabId, {
-                action: 'downloadStarted',
-                downloadId: downloadItem.id,
-                filename: downloadInfo.filename,
-                pageNumber: downloadInfo.pageNumber
-            }).catch(err => {
-                console.error('[BG] Could not notify tab:', err);
-            });
-        }
+  if (message.action === "taskComplete") {
+    if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
+      clearTaskState();
+      sendResponse({ success: true });
     } else {
-        // Use default filename for non-blob downloads
-        suggest();
+      sendResponse({ success: false });
     }
+    return true;
+  }
+
+  if (message.action === "taskStop") {
+    if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
+      clearTaskState();
+      sendResponse({ success: true });
+    } else {
+      sendResponse({ success: false });
+    }
+    return true;
+  }
+
+  if (message.action === "taskError") {
+    if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
+      clearTaskState();
+      sendResponse({ success: true });
+    } else {
+      sendResponse({ success: false });
+    }
+    return true;
+  }
+
+  // 查询任务状态（供 popup 使用）
+  if (message.action === "getTaskState") {
+    sendResponse({ ...taskState });
+    return true;
+  }
+
+  // 恢复任务（供 content script 使用）
+  if (message.action === "restoreTask") {
+    if (taskState.isGenerating && taskState.tabId === sender.tab?.id) {
+      sendResponse({
+        success: true,
+        state: {
+          prompts: taskState.prompts,
+          saveDirectory: taskState.saveDirectory,
+          currentIndex: taskState.currentIndex,
+          total: taskState.total
+        }
+      });
+    } else {
+      sendResponse({ success: false });
+    }
+    return true;
+  }
 });
 
-// Monitor download state changes - this is the key improvement!
-chrome.downloads.onChanged.addListener((downloadDelta) => {
-    const downloadId = downloadDelta.id;
-    const downloadInfo = activeDownloads.get(downloadId);
 
-    if (!downloadInfo) {
-        // Not our download, ignore
-        return;
-    }
 
-    // Check if download completed
-    if (downloadDelta.state && downloadDelta.state.current === 'complete') {
-        console.log('[BG] Download completed:', downloadId, 'for page:', downloadInfo.pageNumber);
-        
-        // Notify content script
-        if (downloadInfo.tabId) {
-            chrome.tabs.sendMessage(downloadInfo.tabId, {
-                action: 'downloadComplete',
-                downloadId: downloadId,
-                filename: downloadInfo.filename,
-                pageNumber: downloadInfo.pageNumber
-            }).catch(err => {
-                console.error('[BG] Could not notify tab of completion:', err);
-            });
-        }
 
-        // Clean up
-        activeDownloads.delete(downloadId);
-    } 
-    // Check if download failed
-    else if (downloadDelta.state && downloadDelta.state.current === 'interrupted') {
-        console.error('[BG] Download interrupted:', downloadId);
-        
-        // Notify content script
-        if (downloadInfo.tabId) {
-            chrome.tabs.sendMessage(downloadInfo.tabId, {
-                action: 'downloadFailed',
-                downloadId: downloadId,
-                pageNumber: downloadInfo.pageNumber
-            }).catch(err => {
-                console.error('[BG] Could not notify tab of failure:', err);
-            });
-        }
 
-        // Clean up
-        activeDownloads.delete(downloadId);
-    }
-});

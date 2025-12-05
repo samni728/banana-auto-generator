@@ -36,32 +36,92 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
-  // Check if generation is already running
-  try {
-    const response = await chrome.tabs.sendMessage(currentTab.id, {
-      action: 'getStatus'
-    });
+  // 检查任务状态（优先从 background 查询持久化状态）
+  await checkTaskStatus();
+  
+  // 定期更新状态（每2秒）
+  const statusInterval = setInterval(async () => {
+    await checkTaskStatus();
+  }, 2000);
+  
+  // 页面关闭时清理定时器
+  window.addEventListener('beforeunload', () => {
+    clearInterval(statusInterval);
+  });
+});
 
-    if (response && response.isGenerating) {
-      // Restore running state
+// 记录当前显示的进度（确保只增不减）
+let lastDisplayedProgress = 0;
+
+// 检查任务状态
+async function checkTaskStatus() {
+  try {
+    // 优先从 background 查询持久化状态
+    const bgState = await chrome.runtime.sendMessage({ action: 'getTaskState' });
+    
+    if (bgState && bgState.isGenerating) {
+      // 从 background 恢复状态
       isRunning = true;
       elements.startBtn.style.display = 'none';
       elements.stopBtn.style.display = 'block';
       elements.prompts.disabled = true;
-
-      // Restore progress
-      if (response.current && response.total) {
-        updateProgress(response.current, response.total);
-        showStatus(`正在生成第 ${response.current} 张图片...`, 'processing');
+      
+      if (bgState.currentIndex && bgState.total) {
+        // 确保进度只增不减
+        const newProgress = Math.max(bgState.currentIndex, lastDisplayedProgress);
+        if (newProgress > lastDisplayedProgress) {
+          lastDisplayedProgress = newProgress;
+          updateProgress(newProgress, bgState.total);
+          showStatus(`正在生成第 ${newProgress} 张图片...`, 'processing');
+        }
       } else {
         showStatus('正在生成图片...', 'processing');
       }
+      return;
+    }
+    
+    // 备用：从 content script 查询（如果 background 没有状态）
+    try {
+      const response = await chrome.tabs.sendMessage(currentTab.id, {
+        action: 'getStatus'
+      });
+
+      if (response && response.isGenerating) {
+        isRunning = true;
+        elements.startBtn.style.display = 'none';
+        elements.stopBtn.style.display = 'block';
+        elements.prompts.disabled = true;
+
+        if (response.current && response.total) {
+          // 确保进度只增不减
+          const newProgress = Math.max(response.current, lastDisplayedProgress);
+          if (newProgress > lastDisplayedProgress) {
+            lastDisplayedProgress = newProgress;
+            updateProgress(newProgress, response.total);
+            showStatus(`正在生成第 ${newProgress} 张图片...`, 'processing');
+          }
+        } else {
+          showStatus('正在生成图片...', 'processing');
+        }
+      } else if (isRunning) {
+        // 如果之前显示运行中，但现在没有运行，重置UI
+        resetUI();
+        lastDisplayedProgress = 0; // 重置进度
+      }
+    } catch (error) {
+      // Content script 未就绪或没有运行的任务
+      if (isRunning) {
+        // 如果 background 也没有状态，重置UI
+        if (!bgState || !bgState.isGenerating) {
+          resetUI();
+          lastDisplayedProgress = 0; // 重置进度
+        }
+      }
     }
   } catch (error) {
-    // Content script not ready or no generation running
-    console.log('No active generation or content script not ready');
+    console.log('查询任务状态失败:', error);
   }
-});
+}
 
 // Save prompts and directory on change
 elements.prompts.addEventListener('input', () => {
@@ -119,10 +179,23 @@ elements.stopBtn.addEventListener('click', async () => {
 });
 
 // Clear button
-elements.clearBtn.addEventListener('click', () => {
+elements.clearBtn.addEventListener('click', async () => {
   elements.prompts.value = '';
   elements.saveDirectory.value = '';
   chrome.storage.local.remove(['prompts', 'saveDirectory']);
+  
+  // 通知 content script 清理提交记录
+  if (currentTab) {
+    try {
+      await chrome.tabs.sendMessage(currentTab.id, {
+        action: 'clearSubmissionRecords'
+      });
+    } catch (error) {
+      // Content script 可能未就绪，忽略错误
+      console.log('清理提交记录失败（可能 content script 未就绪）');
+    }
+  }
+  
   showStatus('已清空', 'success');
   setTimeout(() => {
     elements.status.classList.remove('active');
@@ -132,14 +205,28 @@ elements.clearBtn.addEventListener('click', () => {
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'updateProgress') {
-    updateProgress(message.current, message.total);
-    showStatus(`正在生成第 ${message.current} 张图片...`, 'processing');
+    // 确保进度只增不减
+    const newProgress = Math.max(message.current, lastDisplayedProgress);
+    if (newProgress > lastDisplayedProgress) {
+      lastDisplayedProgress = newProgress;
+      updateProgress(newProgress, message.total);
+      showStatus(`正在生成第 ${newProgress} 张图片...`, 'processing');
+    }
+    // 确保UI状态正确
+    if (!isRunning) {
+      isRunning = true;
+      elements.startBtn.style.display = 'none';
+      elements.stopBtn.style.display = 'block';
+      elements.prompts.disabled = true;
+    }
   } else if (message.action === 'generationComplete') {
     showStatus(`✅ 成功生成 ${message.total} 张图片！`, 'success');
     resetUI();
+    lastDisplayedProgress = 0; // 重置进度
   } else if (message.action === 'generationError') {
     showStatus(`❌ 错误: ${message.error}`, 'error');
     resetUI();
+    lastDisplayedProgress = 0; // 重置进度
   }
 });
 
@@ -159,4 +246,5 @@ function resetUI() {
   elements.startBtn.style.display = 'block';
   elements.stopBtn.style.display = 'none';
   elements.prompts.disabled = false;
+  lastDisplayedProgress = 0; // 重置进度
 }
