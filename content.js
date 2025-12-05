@@ -904,6 +904,20 @@ function isRasterImageUrl(src) {
   return false;
 }
 
+// 尝试构造“Download full size”直链（基于观察到的 rd-gg-dl / =s0-d-I 模式）
+function buildFullSizeCandidates(src) {
+  if (!src) return [];
+  if (src.includes("googleusercontent.com")) {
+    const base = src.split("=")[0];
+    return [
+      `${base}=s0-d-I`,
+      `${base}=s0-d`,
+      `${base}=s0`, // 最后兜底
+    ];
+  }
+  return [src];
+}
+
 // 批量获取图片链接 -> 转换为高清 -> 下载（按生成顺序，过滤非图片）
 async function downloadAllGeneratedImages() {
   console.log("[Batch] 开始提取图片链接...");
@@ -964,18 +978,13 @@ async function downloadAllGeneratedImages() {
     const src = candidates[i].src;
     let finalUrl = src;
 
-    // 高清化处理（仅对 googleusercontent.com 做 =s0）
-    if (
-      finalUrl.includes("googleusercontent.com") &&
-      finalUrl.includes("=")
-    ) {
-      const baseUrl = finalUrl.split("=")[0];
-      finalUrl = `${baseUrl}=s0`;
-      console.log(`[Batch] Page ${pageNum}: URL 已升级为高清版 (=s0)`);
+    // 优先尝试“Download full size”直链模式
+    const candidatesUrls = buildFullSizeCandidates(src);
+    finalUrl = candidatesUrls[0] || src;
+    if (finalUrl !== src) {
+      console.log(`[Batch] Page ${pageNum}: 尝试全尺寸链接 ${finalUrl}`);
     } else {
-      console.log(
-        `[Batch] Page ${pageNum}: 使用原始 URL (可能是 blob/原图，或已是 PNG/JPEG)`
-      );
+      console.log(`[Batch] Page ${pageNum}: 使用原始 URL`);
     }
 
     // 强制使用 .png 扩展
