@@ -14,15 +14,24 @@ const elements = {
   progressFill: document.getElementById('progressFill'),
   progressText: document.getElementById('progressText')
 };
-// 动态创建“仅下载当前页图片”按钮（当页面已有图片时才显示）
+// 动态创建"仅下载当前页图片"按钮（当页面已有图片时才显示）
 const downloadExistingBtn = document.createElement('button');
 downloadExistingBtn.id = 'downloadExistingBtn';
-downloadExistingBtn.textContent = '下载本页图片';
+downloadExistingBtn.textContent = '📥 下载本页图片';
 downloadExistingBtn.style.display = 'none';
 downloadExistingBtn.style.marginLeft = '8px';
 downloadExistingBtn.style.whiteSpace = 'nowrap';
 downloadExistingBtn.style.fontSize = '13px';
+downloadExistingBtn.style.padding = '8px 12px';
+downloadExistingBtn.style.background = '#10b981';
+downloadExistingBtn.style.color = 'white';
+downloadExistingBtn.style.border = 'none';
+downloadExistingBtn.style.borderRadius = '6px';
+downloadExistingBtn.style.cursor = 'pointer';
 downloadExistingBtn.className = 'btn secondary';
+
+// 记录当前检测到的图片数量
+let detectedImageCount = 0;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
@@ -255,19 +264,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// 检查当前页是否已有可下载图片，控制“下载当前页图片”按钮显示
+// 检查当前页是否已有可下载图片，控制"下载当前页图片"按钮显示
 async function checkExistingImagesAndToggle() {
   if (!currentTab) return;
   try {
     const res = await chrome.tabs.sendMessage(currentTab.id, { action: 'checkExistingImages' });
     if (res && res.count && res.count > 0) {
+      detectedImageCount = res.count;
       downloadExistingBtn.style.display = 'inline-block';
       downloadExistingBtn.disabled = false;
-      downloadExistingBtn.title = `检测到 ${res.count} 张图片，可直接下载`;
+      // 在按钮上显示图片数量
+      downloadExistingBtn.textContent = `📥 下载 ${res.count} 张图片`;
+      downloadExistingBtn.title = `检测到 ${res.count} 张高清图片，点击下载`;
     } else {
+      detectedImageCount = 0;
       downloadExistingBtn.style.display = 'none';
     }
   } catch (e) {
+    detectedImageCount = 0;
     downloadExistingBtn.style.display = 'none';
   }
 }
@@ -277,23 +291,35 @@ downloadExistingBtn.addEventListener('click', async () => {
   if (!currentTab) return;
   const dir = elements.saveDirectory.value.trim();
   downloadExistingBtn.disabled = true;
-  showStatus('正在下载当前页图片...', 'processing');
+  
+  // 更新按钮文本显示下载中状态
+  const originalText = downloadExistingBtn.textContent;
+  downloadExistingBtn.textContent = `⏳ 下载中...`;
+  
+  showStatus(`正在下载 ${detectedImageCount} 张图片...`, 'processing');
+  updateProgress(0, detectedImageCount);
+  
   try {
     const res = await chrome.tabs.sendMessage(currentTab.id, {
       action: 'downloadExisting',
-      saveDirectory: dir
+      saveDirectory: dir,
+      expectedCount: detectedImageCount // 传递期望的图片数量
     });
     if (res && res.success) {
-      showStatus('开始下载当前页图片...', 'success');
+      showStatus(`开始下载 ${detectedImageCount} 张图片...`, 'success');
     } else {
       showStatus('下载启动失败', 'error');
+      downloadExistingBtn.textContent = originalText;
     }
   } catch (e) {
     showStatus('下载启动失败，请刷新页面重试', 'error');
+    downloadExistingBtn.textContent = originalText;
   } finally {
     setTimeout(() => {
       downloadExistingBtn.disabled = false;
-    }, 2000);
+      // 恢复按钮文本
+      downloadExistingBtn.textContent = originalText;
+    }, 3000);
   }
 });
 

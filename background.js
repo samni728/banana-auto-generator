@@ -1,4 +1,4 @@
-// background.js - 任务状态持久化版本 + webRequest 网络监听
+// background.js - 任务状态持久化版本 + webRequest 网络监听（智能头信息校验版）
 
 // 任务状态存储（持久化到 chrome.storage）
 let taskState = {
@@ -17,6 +17,7 @@ let taskState = {
 let downloadQueue = []; // 存放预期的文件名队列
 let isSniffing = false; // 开关，防止平时误下载
 let capturedUrls = new Set(); // 已捕获的 URL，避免重复下载
+let processedRequestIds = new Set(); // 已处理的请求ID，防止重复（用于 onHeadersReceived）
 
 // 初始化：从存储恢复状态
 chrome.runtime.onInstalled.addListener(async () => {
@@ -72,54 +73,93 @@ async function clearTaskState() {
   console.log("[BG] 任务状态已清理");
 }
 
-// 【已删除】requestDownloadMap 不再需要，因为不再使用 onCompleted 监听器
-// 之前的代码：const requestDownloadMap = new Map();
+// 【核心优化】根据 fix1.md：改用 onHeadersReceived 监听
+// 原因：onBeforeRequest 只能看 URL，无法分辨文件真假
+// onHeadersReceived 可以看到 Content-Length 和 Content-Type，实现智能过滤
 
-// 核心：监听网络请求，捕获 /rd-gg/ 高清图链接
-chrome.webRequest.onBeforeRequest.addListener(
+chrome.webRequest.onHeadersReceived.addListener(
   function (details) {
-    // 【核心修复1】根据 fix.md：必须明确排除 /rd-gg-dl/，避免下载到 833 字节的元数据文件
-    // /rd-gg-dl/ 也包含 /rd-gg/，但它是假文件，不是真正的图片
-    const isTargetUrl =
-      details.url.includes("/rd-gg/") && !details.url.includes("/rd-gg-dl/");
+    // 未开启监听，跳过
+    if (!isSniffing) return;
 
-    // 只在任务进行中，且 URL 是目标 URL 时触发
-    // 【优化】根据 fix.md 建议：检查完整 URL 和基础 URL（去掉查询参数）是否已被捕获
-    const baseUrl = details.url.split("?")[0];
-    const isDuplicate =
-      capturedUrls.has(details.url) || capturedUrls.has(baseUrl);
+    // 1. URL 粗筛：必须包含 rd-gg（兼容 rd-gg 和 rd-gg-dl）
+    if (!details.url.includes("rd-gg")) return;
 
-    if (isSniffing && isTargetUrl && !isDuplicate) {
+    // 2. 检查是否已处理过该请求（防止重复）
+    if (processedRequestIds.has(details.requestId)) {
+      console.log(`[BG] ⏭️ 跳过已处理的请求ID: ${details.requestId}`);
+      return;
+    }
+
+    // 3. 获取响应头信息
+    const headers = details.responseHeaders || [];
+
+    // 获取 Content-Length (文件大小)
+    const lengthHeader = headers.find(
+      (h) => h.name.toLowerCase() === "content-length"
+    );
+    const contentLength = lengthHeader ? parseInt(lengthHeader.value, 10) : 0;
+
+    // 获取 Content-Type (文件类型)
+    const typeHeader = headers.find(
+      (h) => h.name.toLowerCase() === "content-type"
+    );
+    const contentType = typeHeader ? typeHeader.value.toLowerCase() : "";
+
+    // 4. 【关键智能过滤】
+    // 条件A: 大小必须超过 50KB（过滤掉 833 bytes 的元数据文件）
+    // 条件B: 类型必须是图片（image/png, image/jpeg, image/webp）
+    const MIN_SIZE = 50000; // 50KB
+    const isRealImage =
+      contentLength > MIN_SIZE && contentType.startsWith("image/");
+
+    if (isRealImage) {
+      // 检查 URL 去重
+      const baseUrl = details.url.split("?")[0];
+      const isDuplicate =
+        capturedUrls.has(details.url) || capturedUrls.has(baseUrl);
+
+      if (isDuplicate) {
+        console.log(`[BG] ⏭️ 跳过重复URL: ${details.url.substring(0, 80)}...`);
+        return;
+      }
+
       // 检查队列是否为空
       if (downloadQueue.length === 0) {
         console.warn(
-          `[BG] ⚠️ 队列已空，但收到新请求: ${details.url.substring(0, 80)}...`
+          `[BG] ⚠️ 队列已空，但捕获到合格大图: ${details.url.substring(
+            0,
+            80
+          )}...`
         );
-        return {};
+        console.warn(
+          `[BG] 📊 大小: ${(contentLength / 1024 / 1024).toFixed(
+            2
+          )}MB, 类型: ${contentType}`
+        );
+        return;
       }
 
-      // 取出队列中的下一个文件名（同步操作，避免竞态条件）
+      // 取出队列中的下一个文件名
       const currentFilename = downloadQueue.shift();
-      const remainingCount = downloadQueue.length;
+      processedRequestIds.add(details.requestId); // 标记该请求ID已处理
 
-      console.log(
-        `[BG] 🎯 捕获到高清链接 (请求ID: ${
-          details.requestId
-        }): ${details.url.substring(0, 80)}...`
-      );
-      console.log(
-        `[BG] 📝 分配文件名: ${currentFilename} (剩余队列: ${remainingCount})`
-      );
-
-      // 标记已捕获，避免重复
-      // 【优化】根据 fix.md 建议：如果 URL 带有时间戳参数，去重可能失效
-      // 我们同时保存完整 URL 和基础 URL（去掉查询参数）进行双重去重
+      // 标记 URL 已捕获
       capturedUrls.add(details.url);
       if (baseUrl !== details.url) {
-        capturedUrls.add(baseUrl); // 也标记基础 URL，防止时间戳变体
+        capturedUrls.add(baseUrl);
       }
 
-      // 发起真实下载（使用捕获到的真实 URL，带完整 cookies 和 referer）
+      console.log(
+        `[BG] 🎯 捕获合格大图 (大小: ${(contentLength / 1024 / 1024).toFixed(
+          2
+        )}MB, 类型: ${contentType})`
+      );
+      console.log(
+        `[BG] 📝 分配文件名: ${currentFilename} (剩余队列: ${downloadQueue.length})`
+      );
+
+      // 发起下载（复用这个经过验证的 URL）
       chrome.downloads.download(
         {
           url: details.url,
@@ -134,7 +174,7 @@ chrome.webRequest.onBeforeRequest.addListener(
               chrome.runtime.lastError.message
             );
             // 通知 content script 下载失败
-            if (details.tabId) {
+            if (details.tabId >= 0) {
               chrome.tabs
                 .sendMessage(details.tabId, {
                   action: "downloadFailed",
@@ -144,64 +184,52 @@ chrome.webRequest.onBeforeRequest.addListener(
             }
           } else {
             console.log(
-              `[BG] ✅ 下载任务已建立: ${currentFilename} (下载ID: ${downloadId}, 请求ID: ${details.requestId})`
+              `[BG] ✅ 下载任务已建立: ${currentFilename} (下载ID: ${downloadId})`
             );
-            // 【核心修复2】根据 fix.md：在这里直接通知前台成功！不要去等 onCompleted！
-            // 当网络请求被识别为"下载文件"时，onCompleted 事件往往不会触发，导致超时
+            // 直接通知前台成功
             if (details.tabId >= 0) {
               chrome.tabs
                 .sendMessage(details.tabId, {
-                  action: "downloadStarted", // 告诉前台：搞定了，继续下一个
+                  action: "downloadStarted",
                   filename: currentFilename,
                   downloadId: downloadId,
                 })
-                .catch(() => {
-                  // Content script 可能未就绪，忽略错误
-                });
+                .catch(() => {});
             }
           }
         }
       );
 
-      // 【修复】根据分析报告：不要因为队列空就关闭监听器
-      // Gemini 的请求有严重延迟（36-123秒），如果提前关闭监听器，延迟的请求无法被捕获
-      // 改为：等待 content script 主动发送 stopSniffing 消息
+      // 队列空了但保持监听（等待可能的延迟请求）
       if (downloadQueue.length === 0) {
-        console.log(`[BG] ⚠️ 队列已空，但保持监听器开启（等待可能的延迟请求）`);
-        // 不关闭 isSniffing，继续监听可能的延迟请求
-        // 监听器将在 content script 发送 stopSniffing 时关闭
+        console.log(`[BG] ⚠️ 队列已空，保持监听器开启（等待延迟请求）`);
       }
-    } else if (isSniffing && details.url.includes("/rd-gg/")) {
-      // URL 已被捕获过，跳过
-      // 【优化】检查完整 URL 和基础 URL 是否都被捕获过
-      const checkBaseUrl = details.url.split("?")[0];
-      const isAlreadyCaptured =
-        capturedUrls.has(details.url) || capturedUrls.has(checkBaseUrl);
-      if (isAlreadyCaptured) {
-        console.log(`[BG] ⏭️ 跳过重复URL: ${details.url.substring(0, 80)}...`);
-      }
+    } else if (details.url.includes("rd-gg")) {
+      // 这是一个被过滤掉的请求（比如 833 字节的元数据文件）
+      console.log(
+        `[BG] 🗑️ 忽略无效/小文件: ${contentLength} bytes, Type: ${contentType}, URL: ${details.url.substring(
+          0,
+          60
+        )}...`
+      );
     }
-    // 不阻塞请求，让页面原本的逻辑继续
+
     return {};
   },
-  { urls: ["*://*.googleusercontent.com/rd-gg/*"] }, // 过滤 Log 中的特征域名
-  [] // Manifest V3 不支持 blocking，使用空数组
+  { urls: ["*://*.googleusercontent.com/*rd-gg*"] }, // 匹配所有 rd-gg 相关 URL
+  ["responseHeaders"] // 需要这个权限来读取响应头
 );
-
-// 【核心修复3】根据 fix.md：删除 onCompleted 监听器
-// 原因：当网络请求被识别为"下载文件"时，onCompleted 事件往往不会触发，导致超时
-// 解决方案：在 onBeforeRequest 的 chrome.downloads.download 回调里直接发送成功消息
-// 这个监听器是导致超时的罪魁祸首，已删除
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 开始监听网络请求（由 content script 调用）
   if (message.action === "startSniffing") {
-    // 【优化】根据 fix.md 建议：确保在开始新任务前清理所有状态
+    // 【优化】确保在开始新任务前清理所有状态
     isSniffing = true;
     downloadQueue = [...(message.filenames || [])]; // 创建新数组，避免引用问题
     capturedUrls.clear(); // 清空已捕获记录
+    processedRequestIds.clear(); // 清空已处理请求ID
     console.log(
-      `[BG] 🎬 开始监听高清图请求，队列长度: ${downloadQueue.length}`
+      `[BG] 🎬 开始监听高清图请求（智能头信息校验模式），队列长度: ${downloadQueue.length}`
     );
     console.log(`[BG] 📋 队列内容:`, downloadQueue);
     // 【优化】验证队列不为空
@@ -220,7 +248,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     isSniffing = false;
     downloadQueue = [];
     capturedUrls.clear();
-    console.log("[BG] 停止监听");
+    processedRequestIds.clear();
+    console.log("[BG] 停止监听，已清理所有状态");
     sendResponse({ success: true });
     return true;
   }
