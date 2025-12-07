@@ -1,4 +1,4 @@
-// Content script - 任务状态持久化版本
+// Content script - 任务状态持久化版本（极速模式支持）
 
 let isGenerating = false;
 let shouldStop = false;
@@ -6,6 +6,7 @@ let currentPrompts = [];
 let saveDirectory = "";
 let currentIndex = 0;
 let total = 0;
+let isFastMode = false; // 极速模式开关
 
 // 状态同步到 background（定期更新）
 let stateSyncInterval = null;
@@ -85,6 +86,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     currentIndex = 0;
     total = currentPrompts.length;
     shouldStop = false;
+    isFastMode = message.isFastMode || false; // 接收极速模式参数
+
+    console.log(
+      `[Content] 任务启动，模式: ${
+        isFastMode ? "⚡ 极速模式" : "🐢 模拟人类模式"
+      }`
+    );
 
     // 同步状态到 background
     chrome.runtime.sendMessage({
@@ -244,14 +252,37 @@ async function startGeneration(startFrom = 0) {
           // 再次检查
           const recheck = detectRateLimitOrBlock();
           if (recheck.blocked) {
-            throw new Error(
-              `检测到风控限制: ${rateLimitCheck.reason}，建议稍后再试`
-            );
+            // 风控限制：记录错误但继续下一张（不中断整个任务）
+            console.error(`[Content] 第 ${displayIndex} 张被风控限制，跳过`);
+            chrome.runtime.sendMessage({
+              action: "updateProgress",
+              current: displayIndex,
+              total: currentPrompts.length,
+              status: "error",
+              error: `风控限制: ${rateLimitCheck.reason}`,
+            });
+            continue; // 继续下一张，不中断任务
           }
         }
 
         // 提交提示词（增强容错性，避免重复提交）
-        await submitPromptWithRetry(currentPrompts[i], 3, i);
+        // 【容错优化】捕获提交失败，记录错误但继续下一张
+        try {
+          await submitPromptWithRetry(currentPrompts[i], 3, i);
+        } catch (submitError) {
+          console.error(
+            `[Content] 第 ${displayIndex} 张提交失败，跳过该提示词:`,
+            submitError.message
+          );
+          chrome.runtime.sendMessage({
+            action: "updateProgress",
+            current: displayIndex,
+            total: currentPrompts.length,
+            status: "error",
+            error: "提交超时，已跳过",
+          });
+          continue; // 继续下一张，不中断任务
+        }
 
         // 等待生成完成（增强容错性，验证图片存在）
         const verification = await waitForGenerationWithRetry(
@@ -331,17 +362,29 @@ async function startGeneration(startFrom = 0) {
       }
 
       if (generationSuccess) {
-        // 成功生成后，随机等待15-25秒，模拟真实用户行为，避免触发Google反机器人检测
-        const minWait = 15000; // 15秒
-        const maxWait = 25000; // 25秒
-        const waitTime =
-          Math.floor(Math.random() * (maxWait - minWait + 1)) + minWait;
-        console.log(
-          `[Content] 第 ${displayIndex} 张生成完成，等待 ${
-            waitTime / 1000
-          } 秒（模拟真实用户行为）...`
-        );
-        await sleep(waitTime);
+        // 根据模式决定等待时间
+        if (isFastMode) {
+          // 极速模式：仅等待 2-3 秒冷却（Gemini SPA 需要最小冷却时间避免前端报错）
+          const fastWait = Math.floor(Math.random() * 1000) + 2000; // 2-3秒
+          console.log(
+            `[Content] ⚡ 极速模式：第 ${displayIndex} 张生成完成，冷却 ${(
+              fastWait / 1000
+            ).toFixed(1)} 秒...`
+          );
+          await sleep(fastWait);
+        } else {
+          // 模拟人类模式：随机等待 15-25 秒，避免触发 Google 反机器人检测
+          const minWait = 15000;
+          const maxWait = 25000;
+          const waitTime =
+            Math.floor(Math.random() * (maxWait - minWait + 1)) + minWait;
+          console.log(
+            `[Content] 🐢 模拟人类：第 ${displayIndex} 张生成完成，等待 ${(
+              waitTime / 1000
+            ).toFixed(1)} 秒...`
+          );
+          await sleep(waitTime);
+        }
       } else {
         await sleep(5000); // 失败后等待5秒，避免连续失败
       }

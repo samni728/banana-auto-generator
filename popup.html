@@ -242,6 +242,43 @@
       color: #666;
       text-align: center;
     }
+
+    /* 极速模式开关样式 */
+    .fast-mode-toggle {
+      margin: 12px 0;
+      padding: 10px 12px;
+      background: linear-gradient(135deg, #fff7ed 0%, #fef3c7 100%);
+      border: 1px solid #fbbf24;
+      border-radius: 8px;
+    }
+
+    .toggle-label {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      font-size: 13px;
+      user-select: none;
+    }
+
+    .toggle-label input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin-right: 8px;
+      cursor: pointer;
+      accent-color: #f59e0b;
+    }
+
+    .toggle-text {
+      font-weight: 600;
+      color: #b45309;
+    }
+
+    .toggle-hint {
+      margin-left: 6px;
+      font-size: 11px;
+      color: #92400e;
+      opacity: 0.8;
+    }
   </style>
 </head>
 
@@ -265,6 +302,15 @@
     <label for="prompts">输入提示词（每行一个）：</label>
     <textarea id="prompts"
       placeholder="在此粘贴你的提示词，每行一个...&#10;&#10;例如：&#10;Create a stunning title slide...&#10;Create a comparison slide...&#10;Create a conclusion slide..."></textarea>
+
+    <!-- 极速模式开关 -->
+    <div class="fast-mode-toggle">
+      <label class="toggle-label">
+        <input type="checkbox" id="fastMode">
+        <span class="toggle-text">⚡ 极速生成模式</span>
+        <span class="toggle-hint">(跳过人工等待，2秒冷却)</span>
+      </label>
+    </div>
 
     <div class="controls">
       <button id="startBtn">🚀 开始生成</button>
