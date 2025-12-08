@@ -35,7 +35,7 @@ async function checkAndRestoreTask() {
     if (response && response.success && response.state) {
       console.log("[Content] 检测到未完成的任务，正在恢复...", response.state);
       currentPrompts = response.state.prompts || [];
-      saveDirectory = response.state.saveDirectory || "";
+      saveDirectory = response.astate.saveDirectory || "";
       currentIndex = response.state.currentIndex || 0;
       total = response.state.total || 0;
       shouldStop = false;
@@ -208,6 +208,14 @@ async function startGeneration(startFrom = 0) {
     const successfullyGenerated = [];
     successImages = [];
 
+    // 🟢【修复】获取页面现有的下载按钮数量作为"基准线"
+    // 这样可以正确处理页面已有历史图片的情况
+    const initialDownloadBtns = findDownloadFullSizeButtons();
+    const initialCount = initialDownloadBtns.length;
+    console.log(
+      `[Content] 📊 任务启动。页面现有历史图片/按钮: ${initialCount} 张。接下来基于此数量进行增量等待。`
+    );
+
     for (let i = startFrom; i < currentPrompts.length; i++) {
       if (shouldStop) {
         console.log("[Content] 用户停止任务");
@@ -215,7 +223,10 @@ async function startGeneration(startFrom = 0) {
       }
 
       currentIndex = i;
-      const displayIndex = i + 1;
+      const displayIndex = i + 1; // 用于UI显示（任务第几张）
+      // 🟢【修复】计算真正的目标数量 = 基准数量 + 本次运行的第几张
+      const currentTaskSequence = i - startFrom + 1; // 本次运行的第几张（从1开始）
+      const targetTotalCount = initialCount + currentTaskSequence; // 页面上应有的总按钮数
       let generationSuccess = false;
 
       // 更新进度（通知 popup）
@@ -285,8 +296,12 @@ async function startGeneration(startFrom = 0) {
         }
 
         // 等待生成完成（增强容错性，验证图片存在）
+        // 🟢【修复】使用 targetTotalCount（基准 + 新增）而非 displayIndex（任务序号）
+        console.log(
+          `[Content] 等待页面图片数量达到: ${targetTotalCount} (基准 ${initialCount} + 新增 ${currentTaskSequence})`
+        );
         const verification = await waitForGenerationWithRetry(
-          displayIndex,
+          targetTotalCount,
           3,
           i
         );
@@ -299,7 +314,8 @@ async function startGeneration(startFrom = 0) {
           await sleep(1000); // 额外等待 1 秒，确保图片完全渲染
 
           // 最终验证：确保图片仍然存在且已加载
-          const finalVerification = verifyImageExists(displayIndex);
+          // 🟢【修复】使用 targetTotalCount 进行最终验证
+          const finalVerification = verifyImageExists(targetTotalCount);
           if (finalVerification.exists) {
             generationSuccess = true;
             successfullyGenerated.push(i);
